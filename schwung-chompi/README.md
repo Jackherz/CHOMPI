@@ -16,7 +16,8 @@ module/dsp/port/             chompi::g_sample_dir (one global)
 module/dsp/third_party/      DaisySP bits + the two Schwung ABI headers
 module/module.json           Schwung module manifest
 host/render_test.cpp         offline render harness (no Move needed)
-tools/                       ABI probes (params / state / MIDI)
+tools/                       ABI probes (params / state / MIDI), runnable here
+                             and on the Move — see TESTING.md
 samples/                     two CUBBI samples so the port is testable
 ```
 
@@ -40,11 +41,23 @@ entry point the chain host calls, through the same v2 ABI structs.
 
 ```sh
 python3 -m venv /tmp/zigvenv && /tmp/zigvenv/bin/pip install ziglang
-make module CROSS="/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig c++ -target aarch64-linux-gnu"
+make module ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
 ```
 
-The result needs glibc ≤ 2.27 symbols (verified with `readelf --version-info`)
-and is linked `BIND_NOW` — both deliberate, see *Device unknowns*.
+The build targets **glibc 2.17** (`GLIBC=2.17`, override if you like) and is
+linked `BIND_NOW`. zig's default target is 2.27, which needs
+`expf`/`exp2f`/`logf`/`powf@GLIBC_2.27` — a 2.17 build binds the older symbol
+versions that every newer glibc still provides, so the same `.so` loads on old
+and new Move firmware alike. Verified with
+`readelf --version-info … | grep -o 'GLIBC_[0-9.]*' | sort -u` → `GLIBC_2.17`.
+
+**Deploy and test on the Move:** see [TESTING.md](TESTING.md). Short version:
+
+```sh
+make probe  ZIG=1 ZIG_BIN=…   # cross-build the ABI probes + copy to the Move
+make deploy ZIG=1 ZIG_BIN=…   # install into modules/sound_generators/chompi/
+make logs                     # enable + tail Schwung's debug.log
+```
 
 ## Install on the Move
 
@@ -128,22 +141,19 @@ host does, plays a note per block group and writes a WAV. Three scenarios:
 
 ## Device unknowns (untested on hardware)
 
-1. **glibc** — zig's output targets glibc 2.27 (the Move's likely floor).
-   If the Move is older, `--target aarch64-linux-gnu.2.17` (or a musl build)
-   is the fix; the code uses nothing newer than `stat`/`pthread`.
-2. **Module load path** — assumed `/data/UserData/schwung/modules/sound_generators/chompi/`
-   with `dsp.so`. A wrong kind or filename fails silently at `dlopen` with
-   only a line in `debug.log`.
-3. **File streaming on the SPI callback** — CHOMPI streams samples in 8 KB
-   chunks through a worker thread (48 kHz, 1 kHz SD callback on hardware).
-   On the Move the reads land on the same filesystem as everything else and
-   the worker is scheduled off the audio core (0–2, priority 0), but the
-   real read latency of a large `cubbi_*.wav` during a key press has not been
-   measured on hardware. `CHOMPI_RAM_BUFFER_SAMPLES` (4 M samples ≈ 8 MB per
-   arena at build time) trades RAM for safety margin.
-4. **Input monitoring latency** — CHOMPI monitors the input through the same
+1. **File streaming under load** — CHOMPI streams samples in 8 KB chunks
+   through a worker thread (48 kHz, 1 kHz SD callback on hardware). On the
+   Move the reads land on the shared filesystem and the worker is scheduled
+   off the audio core (0–2, priority 0), but the read latency of a large
+   `cubbi_*.wav` during a key press has not been measured on hardware.
+   `CHOMPI_RAM_BUFFER_SAMPLES` (4 M samples ≈ 8 MB per arena) trades RAM for
+   safety margin. First thing to listen for: clicks when playing fast.
+2. **Input monitoring latency** — CHOMPI monitors the input through the same
    DSP, so live monitoring is one block behind; fine for a looper, worth
    a listen for a live-tape feel.
+3. **Sample set** — only two CUBBI files ship here. The full set is in
+   `firmware/card-profiles/tape-2.0/`; copy it into the module's `samples/`,
+   or the slot scan reports empty slots (visible via `debug_files`).
 
 ## Licence
 

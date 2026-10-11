@@ -7,9 +7,9 @@
 #   make module      assemble a drop-in module/ directory for Schwung
 #   make clean
 #
-# The device build needs aarch64-linux-gnu-g++ (or zig cc with
-# -target aarch64-linux-gnu). If you have neither, build on the Move itself
-# or let moveforge's mise tasks do it — see README.md.
+# The device build needs aarch64-linux-gnu-g++ (or zig as above). If you have
+# neither, build on the Move itself or let moveforge's mise tasks do it — see
+# README.md.
 
 MODULE_DIR   := module
 DSP_DIR      := $(MODULE_DIR)/dsp
@@ -50,7 +50,19 @@ LDFLAGS := -shared -lpthread
 CXX      ?= g++
 CROSS    ?= aarch64-linux-gnu-g++
 
-.PHONY: all host render aarch64 module tools clean
+# zig one-liner for the device build, without a full cross toolchain:
+#   make module ZIG=1 ZIG_BIN=/path/to/zig
+# Targets glibc $(GLIBC) so the .so loads on the widest range of Move firmware.
+# (zig's default target is 2.27, which needs expf/exp2f/logf/powf@2.27; the
+# 2.17 target binds the older symbol versions, which every newer glibc keeps.)
+ZIG      ?=
+ZIG_BIN  ?= zig
+GLIBC    ?= 2.17
+ifeq ($(ZIG),1)
+CROSS    := $(ZIG_BIN) c++ -target aarch64-linux-gnu.$(GLIBC)
+endif
+
+.PHONY: all host render aarch64 module tools tools-aarch64 deploy probe logs logs-off clean
 
 all: host
 
@@ -72,28 +84,34 @@ $(BUILD)/render_test: host/render_test.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) -std=c++17 -O2 -D_Static_assert=static_assert -I $(DSP_DIR)/third_party/schwung -o $@ $< -ldl
 
-aarch64:
+aarch64: $(AARCH64_OUT)
+
+# Rebuilt when any source changes. Switching CROSS does not retrigger it —
+# `make clean` (or touch a source) when changing toolchains.
+$(AARCH64_OUT): $(PORT_SRC) $(wildcard $(DSP_DIR)/engine/*.h) $(wildcard $(DSP_DIR)/compat/*.h)
 	@mkdir -p $(BUILD)/aarch64
-	$(CROSS) $(CXXFLAGS) -o $(AARCH64_OUT) $(PORT_SRC) $(LDFLAGS)
-	@echo "built $(AARCH64_OUT) — copy it to the module dir as dsp.so"
+	$(CROSS) $(CXXFLAGS) -o $@ $(PORT_SRC) $(LDFLAGS)
+	@echo "built $@ — copy it to the module dir as dsp.so"
 
 # Small dev probes that dlopen the built .so and exercise the plugin ABI
-# without a Move: param serving, state round-trip, key handling. They run on
-# the HOST .so, so build it first.
-TOOLS := $(BUILD)/serve_params $(BUILD)/state_roundtrip $(BUILD)/key_probe
+# without a Move: param serving, state round-trip, key handling. `tools`
+# builds them for HOST, `tools-aarch64` for the device (then scp them over).
+TOOL_SRC  := tools/serve_params.cpp tools/state_roundtrip.cpp tools/key_probe.cpp
+TOOLS     := $(patsubst tools/%.cpp,$(BUILD)/%,$(TOOL_SRC))
+TOOLS_A64 := $(patsubst tools/%.cpp,$(BUILD)/aarch64/%,$(TOOL_SRC))
+
 tools: $(HOST_OUT) $(TOOLS)
 
-$(BUILD)/serve_params: tools/serve_params.cpp
+tools-aarch64: $(TOOLS_A64)
+
+$(TOOLS): $(BUILD)/%: tools/%.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) -std=c++17 -O1 -D_Static_assert=static_assert -I $(DSP_DIR)/third_party/schwung -o $@ $< -ldl
 
-$(BUILD)/state_roundtrip: tools/state_roundtrip.cpp
-	@mkdir -p $(BUILD)
-	$(CXX) -std=c++17 -O1 -D_Static_assert=static_assert -I $(DSP_DIR)/third_party/schwung -o $@ $< -ldl
-
-$(BUILD)/key_probe: tools/key_probe.cpp
-	@mkdir -p $(BUILD)
-	$(CXX) -std=c++17 -O1 -D_Static_assert=static_assert -I $(DSP_DIR)/third_party/schwung -o $@ $< -ldl
+$(TOOLS_A64): $(BUILD)/aarch64/%: tools/%.cpp
+	@mkdir -p $(BUILD)/aarch64
+	$(CROSS) $(CXXFLAGS) -o $@ $< -ldl
+	@echo "built $@"
 
 # Staged drop-in directory: build/module/ — copy this to the device as
 #   /data/UserData/schwung/modules/sound_generators/chompi/
@@ -107,6 +125,41 @@ module: $(AARCH64_OUT) module/module.json
 	cp samples/*.wav $(MODULE_STAGE)/samples/ 2>/dev/null || true
 	@echo "staged $(MODULE_STAGE):"
 	@ls -la $(MODULE_STAGE) $(MODULE_STAGE)/samples
+
+# --- deploy to a Move on the LAN -------------------------------------------
+# MOVE=move.local MOVE_USER=ableton by default (Schwung's SSH setup puts the
+# key in /data/authorized_keys). Override for another host/port:
+#   make deploy MOVE=192.168.1.42
+MOVE      ?= move.local
+MOVE_USER ?= ableton
+REMOTE_DIR = /data/UserData/schwung/modules/sound_generators/chompi
+SSH       := ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new $(MOVE_USER)@$(MOVE)
+
+deploy: module
+	$(SSH) "mkdir -p $(REMOTE_DIR)/samples"
+	scp build/module/dsp.so build/module/module.json $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)/
+	scp build/module/samples/*.wav $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)/samples/
+	@echo "deployed to $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)"
+	@echo "reload the chain (or reboot) to pick it up; watch: make logs"
+
+# Cross-compiled ABI probes, dropped in /tmp on the Move so they can be run
+# against the installed module without any UI involvement:
+#   make probe MOVE=move.local
+#   ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./key_probe ./dsp.so <module_dir> 2'
+probe: tools-aarch64 module
+	$(SSH) "mkdir -p /data/UserData/schwung/chompi-probe/samples"
+	scp $(TOOLS_A64) $(MOVE_USER)@$(MOVE):/data/UserData/schwung/chompi-probe/
+	scp build/module/dsp.so build/module/module.json $(MOVE_USER)@$(MOVE):/data/UserData/schwung/chompi-probe/
+	scp build/module/samples/*.wav $(MOVE_USER)@$(MOVE):/data/UserData/schwung/chompi-probe/samples/
+	@echo "probes staged in /data/UserData/schwung/chompi-probe on $(MOVE); run e.g."
+	@echo "  ssh $(MOVE_USER)@$(MOVE) 'cd /data/UserData/schwung/chompi-probe && ./serve_params ./dsp.so chain_params ui_hierarchy && ./key_probe ./dsp.so . 2'"
+
+# Schwung's log: opt-in, then tail it.
+logs:
+	$(SSH) "touch /data/UserData/schwung/debug_log_on && tail -n 80 /data/UserData/schwung/debug.log"
+
+logs-off:
+	$(SSH) "rm -f /data/UserData/schwung/debug_log_on"
 
 clean:
 	rm -rf $(BUILD)
