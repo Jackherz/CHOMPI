@@ -1,0 +1,19 @@
+{
+  "id": "chompi",
+  "name": "CHOMPI",
+  "abbrev": "CHMP",
+  "version": "0.1.0",
+  "api_version": 2,
+  "description": "CHOMPI tape-music sampler / rolling looper (tape-2 firmware DSP) on Move",
+  "author": "CHOMPI Club (DSP) / Schwung port",
+  "component_type": "sound_generator",
+  "dsp": "dsp.so",
+  "capabilities": {
+    "audio_in": true,
+    "audio_out": true,
+    "midi_in": true,
+    "midi_out": false,
+    "chainable": true,
+    "requires_continuous_processing": true
+  }
+}
