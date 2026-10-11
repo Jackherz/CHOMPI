@@ -83,6 +83,11 @@ make samples-full          # copies cubbi_* + jammi_* into samples/ (~150 MB)
 
 ## 1. On-device ABI probe (no UI, no chain host)
 
+> **Confirmed working on a Move, 2026-10-11.** Observed: `chain_params` 2127 B,
+> `ui_hierarchy` 1352 B, `split_voices` empty, `state` 289 B, slot map
+> `cubbi/0:110000000000001-`, `key_probe` `peak=4729` over 2 s,
+> `state_roundtrip` → `round-trip: OK`.
+
 This runs the plugin **on the Move**, through the same v2 ABI the chain host
 uses, with no involvement from the Shadow UI. If the module is going to fail
 on the device, it fails here first, with a readable error.

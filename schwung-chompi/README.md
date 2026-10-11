@@ -153,7 +153,23 @@ host does, plays a note per block group and writes a WAV. Three scenarios:
 `record` (line-in capture into the looper). Expected peaks ≈ 1559 / 3436 /
 3035 — silence means a regression, and `make render` is the smoke test.
 
-## Device unknowns (untested on hardware)
+## Status
+
+| | |
+| --- | --- |
+| Offline (host build, 3 render scenarios) | ✅ working |
+| Device, ABI level (`make probe`, no UI/chain) | ✅ **confirmed on an Ableton Move**, 2026-10-11 |
+| Device, loaded in a chain via the Shadow UI | not yet tested |
+| Musical smoke test (fast playing, looper, audio in) | not yet tested |
+
+The device check that passed: the aarch64 build dlopens on the Move, serves
+`chain_params` (2127 B, 31 entries), `ui_hierarchy` (1352 B, `pad_layout`
+chromatic) and `state` (16 keys), finds the slot files on the Move's
+filesystem (`cubbi/0:110000000000001-`) and streams a CUBBI sample off disk
+into the render block — `peak=4729` over 2 s, i.e. the sample played, and the
+state round-trip came back byte-identical.
+
+## Device unknowns (still untested on hardware)
 
 1. **File streaming under load** — CHOMPI streams samples in 8 KB chunks
    through a worker thread (48 kHz, 1 kHz SD callback on hardware). On the
