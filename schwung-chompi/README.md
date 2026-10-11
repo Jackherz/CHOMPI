@@ -104,29 +104,56 @@ files or the slot reads as empty.
 | --- | --- |
 | 15 keys (C3–C5) | MIDI notes; two octaves fold onto the 15 keys |
 | velocity-sensitive key press | note-on velocity → key request |
-| 8 knobs | `chain_params` — 31 entries, paged by the shadow UI |
+| 8 knobs | `chain_params` — 33 entries, paged by the shadow UI |
 | pitch/speed fader | `varspeed`, `looper_pitch`, `looper_scrub` |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
 | rec / play buttons | `looper_record`, `looper_play`, `record` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |
 | SD-card slot files | `samples/cubbi_aN.wav` / `jammi_aN.wav` on the Move's FS |
+| load a sample onto a key | the **Samples** level: pick `slot`, then `sample_file` opens the host's browser at `/data/UserData/UserLibrary/Samples` |
+| (no CHOMPI equivalent) | `start` / `end` are `wav_position`s: the host draws the assigned file's waveform on the pads |
 
 The shadow UI gets its page layout from `get_param("ui_hierarchy")` (levels
-root / tape / looper / recorder / setup) and the knob list from
+root / tape / looper / recorder / setup / **samples**) and the knob list from
 `get_param("chain_params")`. Slot state is saved/restored through
 `get_param("state")` / `set_param("state", …)` — a flat 16-key JSON object;
 the ids in `chain_params` are the same ids `state` writes, so a saved chain
 reloads with the same knobs, mode, bank and octave.
 
-Beyond the 31 knob entries the plugin also serves a few keys that are *not*
+Beyond the 33 knob entries the plugin also serves a few keys that are *not*
 in `chain_params`, so they never appear in the UI but stay readable/writable
 by a chain or by hand: `monitor_mode` (`both` / `hp` / `sendret`),
 `record` (off/on — the CHOMPI capture button, as opposed to the looper's
-`looper_record`), and two read-only diagnostics, `debug_files` (per-slot
+`looper_record`), and four read-only diagnostics, `debug_files` (per-slot
 file-presence flags for the current mode+bank plus whether the I/O queue
-still has work) and `vu_in` / `vu_out` (envelope followers). All are
-in-memory reads — safe to poll.
+still has work), `sample_slot` (the slot the Samples page is editing) and
+`sample_map` (the assignments for that mode+bank, `"1=/abs/path;3=/other;"`),
+plus `vu_in` / `vu_out` (envelope followers). All are in-memory reads — safe
+to poll.
+
+### Assigning a sample to a key
+
+`slot` selects which slot 1–14 the Samples page is editing (slot 15 is the
+recorder's buffer, and an assignment to it is refused with a message rather
+than silently dropped). `sample_file` is a `filepath` param: the host opens
+its browser, and with `live_preview` set, jogging through the list assigns as
+you go so you hear each candidate before committing. Backing out restores the
+previous value, which is the same path we reported — that is a *clear*, not an
+assignment, so cancelling never leaves a stray override behind.
+
+If the file an assignment points at is later deleted, the slot goes silent —
+the module will not recreate it (only its own convention names get placeholders;
+see PORT PATCH P11 in `VENDORED.md`).
+
+Assignments live in `<module dir>/samples/samples.map`, one line per slot
+(`<mode> <bank> <slot> <abs path>`), written atomically (temp + rename) by the
+I/O worker. Writes are coalesced: the worker waits for the map to be quiet for
+500 ms before touching the card, and `destroy_instance` flushes anything still
+pending, so an assignment made just before the host unloads the synth is not
+lost. On the next load the map is read back before the first file scan, which
+is why an assignment survives a power cycle (`state`, by contrast, only covers
+the knobs).
 
 Two things worth knowing:
 
@@ -173,12 +200,15 @@ host does, plays a note per block group and writes a WAV. Three scenarios:
 | --- | --- |
 | Offline (host build, 3 render scenarios) | ✅ working |
 | Device, ABI level (`make probe`, no UI/chain) | ✅ **confirmed on an Ableton Move**, 2026-10-11 |
-| Device, loaded in a chain via the Shadow UI | not yet tested |
-| Musical smoke test (fast playing, looper, audio in) | not yet tested |
+| Device, loaded in a chain via the Shadow UI | ✅ **confirmed on an Ableton Move**, 2026-10-11 |
+| Keys over a running loop, looper record/playback | ✅ confirmed — briefly filed as a defect, then falsified (the keys do sound over the loop) |
+| Fast playing under load, audio in | not yet tested |
+| Sample import (browser, assignment, waveform trim) | offline-verified (`tools/sample_map_probe`), not yet on device |
 
 The device check that passed: the aarch64 build dlopens on the Move, serves
-`chain_params` (2127 B, 31 entries), `ui_hierarchy` (1352 B, `pad_layout`
-chromatic) and `state` (16 keys), finds the slot files on the Move's
+`chain_params` (2127 B, 31 entries then — 33 since sample import landed),
+`ui_hierarchy` (1352 B, 5 levels then — 6), `pad_layout` chromatic and `state`
+(16 keys), finds the slot files on the Move's
 filesystem (`cubbi/0:110000000000001-`) and streams a CUBBI sample off disk
 into the render block — `peak=4729` over 2 s, i.e. the sample played, and the
 state round-trip came back byte-identical.

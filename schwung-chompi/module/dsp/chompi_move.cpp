@@ -50,6 +50,10 @@
 
 #define CHOMPI_BLOCK MOVE_FRAMES_PER_BLOCK /* 128 */
 #define CHOMPI_MAX_INSTANCES 4
+/* Quiet time before the sample map is written out (see map_dirty_ms). The
+ * write is coalesced, not deferred indefinitely: the worker checks every loop,
+ * and destroy flushes what is still pending. */
+#define CHOMPI_MAP_SETTLE_MS 500
 #define CHOMPI_PATH_LEN 512
 
 /** CHOMPI's keyboard->MIDI map, copied verbatim from NormalPage.h (key_map[]).
@@ -107,7 +111,11 @@ struct ChompiInstance
     /* The slot a samples-page edit applies to (set_param "slot"), and the
      * dirty flag that asks the worker to persist the sample map. */
     int               selected_slot = 1;
-    std::atomic<bool> map_dirty{false};
+    std::atomic<bool>     map_dirty{false};
+    /* When the assignment last changed. The worker waits for the map to settle
+     * before writing it: the browser's live preview assigns as you JOG, so a
+     * sweep through a folder would otherwise be one SD write per step. */
+    std::atomic<uint64_t> map_dirty_ms{0};
 
     /* Octave folding window for incoming notes. */
     std::atomic<int> octave{0};
@@ -134,6 +142,13 @@ struct ChompiInstance
     bool recording = false;
     bool loop_recording = false;
 };
+
+static uint64_t now_ms()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
 
 static ChompiInstance*   g_instances[CHOMPI_MAX_INSTANCES];
 static std::atomic<int>  g_instance_count{0};
@@ -218,8 +233,10 @@ static void* chompi_io_worker(void* arg)
 
             /* Persist the sample map when an assignment landed. Off the
              * callback by contract: this touches the filesystem. */
-            if(inst->map_dirty.exchange(false))
+            if(inst->map_dirty.load(std::memory_order_acquire) &&
+               now_ms() - inst->map_dirty_ms.load(std::memory_order_acquire) >= CHOMPI_MAP_SETTLE_MS)
             {
+                inst->map_dirty.store(false, std::memory_order_release);
                 char map_path[CHOMPI_PATH_LEN];
                 snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
                 chompi::WriteSlotOverrideMap(map_path);
@@ -419,7 +436,21 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         if(val[0] == '\0')
             chompi::ClearSlotOverride(mode, bank, slot);
         else
-            chompi::SetSlotOverride(mode, bank, slot, val);
+        {
+            /* The browser seeds itself with the EFFECTIVE path and writes it
+             * straight back on cancel, so "assign what the slot already plays by
+             * convention" must not leave an override behind: it would pin a
+             * relative name into the map, and later survive the shipped sample
+             * being replaced. Anything else — including a copy of the same
+             * sample from another directory — is a real assignment. */
+            char conv[chompi::kSlotPathMax];
+            chompi::SlotConventionPath(mode, bank, slot, false, conv, sizeof(conv));
+            if(strcmp(conv, val) == 0)
+                chompi::ClearSlotOverride(mode, bank, slot);
+            else
+                chompi::SetSlotOverride(mode, bank, slot, val);
+        }
+        inst->map_dirty_ms.store(now_ms(), std::memory_order_release);
         inst->map_dirty.store(true);
         inst->want_scan_files.store(true); /* re-scan: the slot's file changed */
     }
@@ -429,6 +460,7 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
             return;
         const int mode = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
         chompi::ClearSlotOverride(mode, e.GetBank(), inst->selected_slot);
+        inst->map_dirty_ms.store(now_ms(), std::memory_order_release);
         inst->map_dirty.store(true);
         inst->want_scan_files.store(true);
     }
@@ -677,6 +709,17 @@ static void v2_destroy_instance(void* instance)
     ChompiInstance* inst = (ChompiInstance*)instance;
     if(!inst)
         return;
+
+    /* A settle window may still be open (assign, then unload within 500 ms);
+     * destroy is the last chance to keep that assignment. This thread is not
+     * the render callback, so the write is allowed. */
+    if(inst->map_dirty.load(std::memory_order_acquire))
+    {
+        inst->map_dirty.store(false, std::memory_order_release);
+        char map_path[CHOMPI_PATH_LEN];
+        snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
+        chompi::WriteSlotOverrideMap(map_path);
+    }
 
     inst->stopping.store(true, std::memory_order_release);
     /* Let the worker notice before the memory goes away (it re-checks the

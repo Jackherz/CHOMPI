@@ -26,6 +26,7 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P8 | `FileStreamingManager.cpp` | initialise `fres` — the past-EOF branch reaches the `fres == FR_OK` test without assigning it |
 | P9 | `DSPEngine.h` | `GetFileNameForSlot` delegates to `chompi::SlotSamplePath` so every path in the engine honours the slot override |
 | P10 | `DSPEngine.h` | `EraseStart` unlinks only files the port owns (`IsManagedPath`); `erasing` counts queued requests, not loop iterations |
+| P11 | `compat/chompi_platform.cpp` | `f_open` refuses to create or truncate files outside the module's own sample directory |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -66,6 +67,22 @@ WAV that merely happens to be the slot's target. It unlinks only paths under
 the port's sample directory, and `erasing` now tracks outstanding erase
 requests rather than iterations of the polling loop (the old counter could
 report "done" while an unlink was still queued).
+
+### P11 in detail
+
+The engine opens samples `FA_OPEN_ALWAYS`, which in FatFS means "create it if
+it is missing" — CHOMPI's own behaviour on its own card, and the reason a
+missing convention file turns into a 0-byte placeholder that the slot scan and
+`debug_files` can see. The port can point a slot at any file on the device, so
+that same open could land outside the module's directory: play a slot whose
+assigned file has since been deleted and a 0-byte stub would appear in the
+user's sample library, next to the sample it was named after. The compat
+layer now asks `chompi::IsManagedPath()` before it passes `O_CREAT`/`O_TRUNC`
+through. Inside the module's directory nothing changes; outside it, a missing
+file is missing and the slot is silent, which is the honest answer.
+`tools/sample_map_probe` pins both halves (a user path stays missing, a
+convention path still becomes a placeholder) and cleans up the empties it
+causes, so a local run leaves the working tree clean.
 
 ## Warnings the compiler still reports (all benign)
 

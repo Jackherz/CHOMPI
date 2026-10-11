@@ -18,6 +18,7 @@
 
 #include "daisy.h"
 #include "fatfs.h"
+#include "chompi_port.h"
 
 // ---------------------------------------------------------------- daisy::System
 
@@ -67,10 +68,25 @@ extern "C"
         else
             flags = O_RDWR;
 
+        /* PORT PATCH P11: never create or truncate a file we do not own.
+         *
+         * The engine opens samples FA_OPEN_ALWAYS, and in FatFS that creates the
+         * file when it is missing -- CHOMPI's own behaviour, correct for its own
+         * SD card. The port can point a slot at any file on the device, though,
+         * and that create would land in the user's sample library: play a slot
+         * whose assigned file has since been deleted and a 0-byte stub appears
+         * where the user's sample used to be. Inside the module's own directory
+         * the firmware semantics stand (a missing convention file becomes a
+         * placeholder, which is what `debug_files` and the slot scan expect);
+         * outside it a missing file is simply missing, and the slot stays
+         * silent. FA_CREATE_ALWAYS is used for the recorder's own files, which
+         * live in that same directory -- but gate it too, so no path can ever
+         * truncate something the module does not own. */
+        const bool may_write_new = chompi::IsManagedPath(path);
         if(mode & FA_CREATE_ALWAYS)
-            flags |= O_CREAT | O_TRUNC;
+            flags |= may_write_new ? (O_CREAT | O_TRUNC) : 0;
         else if(mode & FA_OPEN_ALWAYS)
-            flags |= O_CREAT;
+            flags |= may_write_new ? O_CREAT : 0;
 
         const int fd = ::open(path, flags, 0644);
         if(fd < 0)

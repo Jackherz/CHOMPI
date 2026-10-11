@@ -16,6 +16,7 @@
  * three phases have to disagree for the test to pass — a probe that only ever
  * saw the tone (or never did) tells us nothing.
  */
+#include <sys/stat.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -243,6 +244,86 @@ int main(int argc, char** argv)
 
     const double cleared = phase("4. slot 1 after clear", 1.0);
 
+    /* Cancel safety. The host's file browser seeds itself with the path we
+     * report and writes that same value straight back when the user backs out,
+     * so "assign what the slot already plays by convention" has to be a no-op.
+     * If it pinned an override instead, backing out of the browser would leave
+     * a relative name in the map that outlives the shipped sample. */
+    api->set_param(inst, "slot", "3");
+    wait_for_scan(300);
+    n = api->get_param(inst, "sample_file", buf, sizeof buf);
+    char convention[256] = {0};
+    snprintf(convention, sizeof convention, "%s", n > 0 ? buf : "");
+
+    api->set_param(inst, "sample_file", tone);       /* a real assignment */
+    wait_for_scan(1200);
+    n = api->get_param(inst, "sample_map", buf, sizeof buf);
+    const bool assigned_slot3 = (strstr(buf, "3=") != NULL);
+
+    api->set_param(inst, "sample_file", convention); /* the browser's cancel */
+    wait_for_scan(1200);
+    n = api->get_param(inst, "sample_map", buf, sizeof buf);
+    const bool cancel_clean = (n <= 0) || (strstr(buf, "3=") == NULL);
+    n = api->get_param(inst, "sample_file", buf, sizeof buf);
+    const bool back_to_stock = (n > 0) && strcmp(buf, convention) == 0;
+
+    printf("\ncancel: assigned=%d clean=%d restores=%d (convention=%s)\n",
+           assigned_slot3, cancel_clean, back_to_stock, convention);
+
+    /* The settle window is 500 ms, so an assignment made just before the host
+     * unloads the synth would otherwise be dropped: destroy has to flush it.
+     * No wait here on purpose — that is the whole test. */
+    api->set_param(inst, "slot", "4");
+    wait_for_scan(300);
+    api->set_param(inst, "sample_file", tone);
+    api->destroy_instance(inst);          /* immediately, mid-settle */
+    usleep(300 * 1000);
+    inst = api->create_instance(dir, NULL);
+    api->set_param(inst, "voice_mode", "cubbi");
+    api->set_param(inst, "bank", "0");
+    api->set_param(inst, "slot", "4");
+    wait_for_scan(1500);
+    n = api->get_param(inst, "sample_map", buf, sizeof buf);
+    const bool flushed = (n > 0) && (strstr(buf, "4=") != NULL);
+    printf("flush-on-unload: %s\n", flushed ? "kept" : "LOST");
+
+    /* P11: touching a slot whose file is missing must never create files
+     * outside the module's own directory. Two halves, so the asymmetry is
+     * pinned: a user-library path stays missing (no stubs in somebody's
+     * library), a convention path still becomes the placeholder the firmware
+     * would have made. */
+    remove("/tmp/chompi_missing_probe.wav");
+    api->set_param(inst, "slot", "5");
+    wait_for_scan(300);
+    api->set_param(inst, "sample_file", "/tmp/chompi_missing_probe.wav");
+    wait_for_scan(1200);
+    api->set_param(inst, "slot", "6");        /* load a slot: opens the file */
+    wait_for_scan(600);
+    api->set_param(inst, "slot", "5");
+    wait_for_scan(600);
+    struct stat st;
+    const bool user_stub = (stat("/tmp/chompi_missing_probe.wav", &st) == 0);
+    char managed[512];
+    snprintf(managed, sizeof managed, "%s/samples/cubbi_a6.wav", dir);
+    const bool managed_ok = (stat(managed, &st) == 0);
+    printf("P11 create-guard: user-path stub=%d (want 0), managed placeholder=%d (want 1)\n",
+           user_stub, managed_ok);
+
+    /* This probe walks slots 3-6, so the engine's placeholder behaviour leaves
+     * 0-byte convention files behind in the module's samples/ directory. Remove
+     * the ones it caused (only ever empty files -- a shipped sample is not
+     * touched) so a local run does not leave the working tree dirty. */
+    int cleaned = 0;
+    for(int slot = 3; slot <= 6; slot++)
+    {
+        char path[512];
+        snprintf(path, sizeof path, "%s/samples/cubbi_a%d.wav", dir, slot);
+        if(stat(path, &st) == 0 && st.st_size == 0 && remove(path) == 0)
+            cleaned++;
+    }
+    if(cleaned)
+        printf("cleaned %d placeholder file(s) from samples/\n", cleaned);
+
     printf("\nVERDICT stock=%.2f%% assigned=%.2f%% reloaded=%.2f%% cleared=%.2f%%\n",
            stock * 100, assigned * 100, reloaded * 100, cleared * 100);
     /* A pure tone is a single partial: most of the block's energy sits in one
@@ -251,7 +332,9 @@ int main(int argc, char** argv)
     /* phase() returns a FRACTION; the percentages above are for reading. */
     const bool ok = assigned > 0.50 && assigned > stock * 3.0
                     && reloaded > 0.50 /* the map persisted */
-                    && cleared < 0.25;
+                    && cleared < 0.25
+                    && assigned_slot3 && cancel_clean && back_to_stock
+                    && flushed && !user_stub && managed_ok;
     printf("%s\n", ok ? "PASS: the assigned sample is what plays"
                       : "FAIL: the override did not change what plays");
     return ok ? 0 : 3;

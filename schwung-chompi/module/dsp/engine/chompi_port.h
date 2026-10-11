@@ -88,9 +88,16 @@ inline void SamplePath(char* dst, size_t dst_len, const char* name)
  *  doubled copy exists to avoid. */
 void SlotSamplePath(int mode, int bank, int slot, bool dbl, char* dst, size_t dst_len);
 
+/** The convention name alone, ignoring any assignment:
+ *  "<sample_dir>/<mode>_<bank><slot>[_double].wav". The browser hands back the
+ *  path it was given, so an assignment equal to this one is not an override —
+ *  it is what the slot already plays. */
+void SlotConventionPath(int mode, int bank, int slot, bool dbl, char* dst, size_t dst_len);
+
 /** Assigns the sample for one slot (absolute path), or clears it with an empty
- *  path. Write side of the map: called from set_param, i.e. the audio callback.
- *  Slots outside 1..14 are refused (slot 15 is the recording buffer). */
+ *  path. Write side of the map: called from set_param, i.e. the host's
+ *  management thread — never the render callback. Slots outside 1..14 are
+ *  refused (slot 15 is the recording buffer). */
 void SetSlotOverride(int mode, int bank, int slot, const char* abs_path);
 void ClearSlotOverride(int mode, int bank, int slot);
 bool SlotHasOverride(int mode, int bank, int slot);

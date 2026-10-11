@@ -78,6 +78,14 @@ void SlotSamplePath(int mode, int bank, int slot, bool dbl, char* dst, size_t ds
         return;
     }
 
+    SlotConventionPath(mode, bank, slot, dbl, dst, dst_len);
+}
+
+void SlotConventionPath(int mode, int bank, int slot, bool dbl, char* dst, size_t dst_len)
+{
+    if(dst == nullptr || dst_len == 0)
+        return;
+
     /* The convention name, exactly as the engine used to build it:
      * "<mode>_<bankchar><slot>[_double].wav". */
     char bare[64];

@@ -203,6 +203,45 @@ In order, each step isolates one subsystem:
 
 ---
 
+## 4. Sample import
+
+Assign any WAV on the Move to any key, and it sticks across a power cycle.
+
+```sh
+cd ~/CHOMPI/schwung-chompi
+make deploy ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
+```
+
+Then, with the chain loaded, open the module's editor and go to **Samples**:
+
+1. `SLOT` → the slot you want to change (1–14; slot 15 is the recorder's
+   buffer and is refused on purpose).
+2. `SMPL` → the browser opens at `/data/UserData/UserLibrary/Samples`. If that
+   folder is empty, put something in it first:
+   `scp myloop.wav ableton@move.local:/data/UserData/UserLibrary/Samples/`
+3. Jog through the list — the slot follows the highlighted file (live
+   preview), so you hear each one before you commit. Click to commit, back out
+   to cancel.
+4. Play the key for that slot (slot 1 = C3): it plays your file.
+5. `STRT` / `END` now trim *that* file and the pads draw its waveform.
+6. `CLR` returns the slot to the shipped `samples/cubbi_aN.wav`.
+7. Power-cycle and reload the Set: your assignment is still there.
+
+If you want the whole loop without a Move:
+
+```sh
+make host
+g++ -std=c++17 -O1 -D_Static_assert=static_assert \
+    -I module/dsp/third_party/schwung -o /tmp/probe tools/sample_map_probe.cpp -ldl
+/tmp/probe build/chompi_move.so . /tmp/tone.wav
+```
+
+It renders a 1 kHz tone, assigns it, tears the plugin down and back up, then
+measures which file actually played. Expect `PASS`, with the assigned tone at
+~90% of the block's energy and the shipped sample ~10%.
+
+---
+
 ## What a failure looks like
 
 | Symptom | Where to look |
@@ -214,6 +253,8 @@ In order, each step isolates one subsystem:
 | Loads, but no knobs / no pad layout | `serve_params` on the device (level 1): `chain_params`, `ui_hierarchy` |
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
 | Everything works, output clips | `volume`/`gain`/`saturate`; CHOMPI's defaults are hot |
+| Browser opens, picking a file does nothing | the read-back key: `ssh ableton@move.local` then ask the plugin — `sample_file` must show the path, `sample_map` the assignment |
+| Assignment gone after a power cycle | `<module dir>/samples/samples.map` — check it exists and the module dir is writable |
 | Clicks under load, fine otherwise | filesystem streaming — report the `debug_files` reading and the timing |
 | Chain host crashes on load | send `debug.log` — likely an ABI mismatch, so include the Schwung version |
 
