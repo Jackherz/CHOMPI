@@ -127,7 +127,10 @@ by a chain or by hand: `monitor_mode` (`both` / `hp` / `sendret`),
 `record` (off/on — the CHOMPI capture button, as opposed to the looper's
 `looper_record`), and four read-only diagnostics, `debug_files` (per-slot
 file-presence flags for the current mode+bank plus whether the I/O queue
-still has work), `sample_slot` (the slot the Samples page is editing) and
+still has work), `debug_voice` (one line per voice — playing, envelope gate,
+assigned key, file size, pending open/seek/read counts, buffered samples, the
+file it holds; this is the reading to ask for when a voice goes quiet),
+`sample_slot` (the slot the Samples page is editing) and
 `sample_map` (the assignments for that mode+bank, `"1=/abs/path;3=/other;"`),
 plus `vu_in` / `vu_out` (envelope followers). All are in-memory reads — safe
 to poll.
@@ -186,6 +189,13 @@ make host && make tools
 ./build/state_roundtrip                               # set/get/edit round-trip
 ./build/key_probe                                     # presses a key, polls slot files, reports peak
 ./build/render_test build/chompi_move.so out.wav cubbi samples 4
+
+# tools/sample_map_probe: assign a WAV, reload the plugin, check what plays
+# tools/slot_knob_probe:  the slot knob, fast playing, and a vanished file
+#                         must none of them wedge the voices (see VENDORED P12/P13)
+g++ -std=c++17 -O1 -D_Static_assert=static_assert \
+    -I module/dsp/third_party/schwung -o /tmp/probe tools/slot_knob_probe.cpp -ldl
+/tmp/probe build/chompi_move.so .
 ```
 
 `render_test` dlopens the plugin, feeds it the same `host_api_v1_t` the chain

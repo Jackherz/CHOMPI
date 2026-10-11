@@ -27,6 +27,8 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P9 | `DSPEngine.h` | `GetFileNameForSlot` delegates to `chompi::SlotSamplePath` so every path in the engine honours the slot override |
 | P10 | `DSPEngine.h` | `EraseStart` unlinks only files the port owns (`IsManagedPath`); `erasing` counts queued requests, not loop iterations |
 | P11 | `compat/chompi_platform.cpp` | `f_open` refuses to create or truncate files outside the module's own sample directory |
+| P12 | `compat/chompi_platform.cpp` | `f_open` closes the previous descriptor when a file object is re-opened (the engine skips CLOSE for empty files; each skip leaked a kernel fd) |
+| P13 | `SampleReader.h` + `FileStreamingManager.cpp` | a failed open calls the new `FileOpenFailed()`, releasing the pending-open count instead of wedging the voice |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -83,6 +85,39 @@ file is missing and the slot is silent, which is the honest answer.
 `tools/sample_map_probe` pins both halves (a user path stays missing, a
 convention path still becomes a placeholder) and cleans up the empties it
 causes, so a local run leaves the working tree clean.
+
+### P12–P13 in detail
+
+These two are a pair, and together they are what "it went silent and only came
+back after I restarted the module" turned out to be.
+
+`SampleReader::OpenFile` skips the CLOSE when the file it holds is empty
+(`f_size() == 0` — FatFS's CLOSE handler and the reader both test it), and the
+engine re-opens the same `FIL` in place. FatFS is a library, so skipping the
+close cost the firmware nothing; on Linux a `FIL` owns a descriptor, so every
+re-open of an empty file leaked one. Empty files are exactly the missing slots
+(on the card profile only some slots have samples), so playing keys and turning
+the slot knob both leaked, one descriptor per voice per event, and the leak
+ends in `f_open` failing — `EMFILE`.
+
+A failing open was the second half. The reader counts a pending open before it
+queues the request and only clears that count when the open lands, and
+`open_requests_ != 0` gates the streaming refill *and* the reader's own
+recovery path in `StartPlaying()`. So one unreadable file did not silence one
+slot: the voice kept its envelope gate, stopped streaming, and never recovered.
+Seven of those and the module was mute until it was recreated — a deleted or
+renamed assigned sample is enough, as is any slot whose file cannot be opened.
+
+P12 closes the previous descriptor before adopting the new one; P13 releases the
+count and drops the handle when an open fails, so that slot is simply silent and
+the voice is usable again. `tools/slot_knob_probe` measures both: the descriptor
+count stays flat across a slot sweep and a fast key sweep, and a key whose file
+is gone is silent while its neighbours keep playing.
+
+`FileStreamingManager` also gained two diagnostics that came out of this
+(a `CountingFifo` that counts refused `PushBack`s — every call site ignores the
+answer — and `Engine::DescribeVoices`, served as `debug_voice`). Both are
+additive; P12/P13 are the behaviour changes.
 
 ## Warnings the compiler still reports (all benign)
 

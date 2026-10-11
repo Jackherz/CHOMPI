@@ -385,13 +385,22 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     }
     else if(strcmp(key, "slot") == 0)
     {
+        /* SELECTION ONLY -- never SetVoiceSlot().
+         *
+         * This knob says which slot the Samples page is editing, and the
+         * engine's SetVoiceSlot() is a different thing: it rebinds every voice
+         * to that slot's file. Calling it here hijacked playback (the keys no
+         * longer decided their own slot) and, worse, scrolling the knob
+         * wedged the voice for good -- a burst of re-opens ends with the
+         * readers bound to a file that never finished opening, and the module
+         * stays silent until it is recreated. Keys pick their own slot through
+         * KeyToSlot(); an assignment changes the file that slot will play. */
         int slot = (int)f;
-        if(slot < 0)
-            slot = 0;
+        if(slot < 1)
+            slot = 1;
         if(slot > 15)
             slot = 15;
-        inst->selected_slot = (int)slot;
-        e.SetVoiceSlot((size_t)slot, true);
+        inst->selected_slot = slot;
     }
     else if(strcmp(key, "record") == 0)
     {
@@ -887,6 +896,12 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
             off += n;
         }
         return off;
+    }
+    if(strcmp(key, "debug_voice") == 0)
+    {
+        /* See Engine::DescribeVoices. Serve it as one string: the readings
+         * that decide whether a voice can sound at all. */
+        return inst->engine.DescribeVoices(buf, buf_len);
     }
     if(strcmp(key, "sample_slot") == 0)
         return snprintf(buf, buf_len, "%d", inst->selected_slot);

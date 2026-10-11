@@ -86,7 +86,23 @@ namespace daisy
          *  Requests generated and pushed to the back from inside the AudioCallback,
          *  or from UI/MIDI interactions outside of the callback.
          */
-        FIFO<FileRequest, 64> request_fifo;
+        /* PORT (diagnostic, not a behaviour change): count the pushes the
+         * FIFO refuses. Every call site ignores PushBack()'s answer, so a
+         * dropped request is invisible -- except in the reader's counters,
+         * which go on believing it is queued. That is how a voice wedges:
+         * `open_requests_ != 0` gates the refill that would feed it. */
+        struct CountingFifo : public FIFO<FileRequest, 64>
+        {
+            size_t refused_pushes = 0;
+            bool   PushBack(const FileRequest& r)
+            {
+                const bool ok = FIFO<FileRequest, 64>::PushBack(r);
+                if(!ok)
+                    refused_pushes++;
+                return ok;
+            }
+        };
+        CountingFifo          request_fifo;
         FIFO<FileRequest, 32> debug_fifo;
 
         void Init(float samplerate)

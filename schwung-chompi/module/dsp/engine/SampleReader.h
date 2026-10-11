@@ -414,6 +414,30 @@ namespace daisy
                 open_requests_--;
         }
 
+        /** PORT P13: the queued open did not land.
+         *
+         *  Without this, a single unreadable file was permanent: the refill
+         *  below an empty sample FIFO is gated on `open_requests_ == 0`, and
+         *  StartPlaying()'s own recovery only runs while that count is zero,
+         *  so the voice kept its "playing" gate, never streamed again, and
+         *  every voice that hit it went silent for the rest of the session --
+         *  an assignment to a file that has since been deleted is enough.
+         *  Release the count and drop the handle, so the slot is simply silent
+         *  and the voice can be used again. */
+        void FileOpenFailed()
+        {
+            if(open_requests_ != 0)
+                open_requests_--;
+
+            const bool was_open = fptr_read.in_use.load(std::memory_order_relaxed);
+            if(was_open)
+                f_close(&fptr_read);
+
+            fptr_read.size.store(0, std::memory_order_relaxed);
+            fptr_read.obj.objsize = 0;
+            read_samps.Clear();
+        }
+
         /** Reads the next data available in the local FIFO */
         int16_t PopSample() { return 0; }
 

@@ -16,6 +16,10 @@
 
 namespace chompi
 {
+    int  g_open_fail_count = 0;      /* see chompi_port.h */
+    char g_last_open_fail[256] = {0};
+    int  g_last_open_errno = 0;
+
 char g_sample_dir[kSampleDirMax + 1] = {0};
 
 namespace

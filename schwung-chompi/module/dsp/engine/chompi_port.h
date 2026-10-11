@@ -25,6 +25,14 @@
 
 namespace chompi
 {
+    /** The last f_open() the compat layer refused, and how many it has. A
+     *  failed open is not cosmetic: the engine's reader counts a pending open
+     *  before queueing it and only clears the count once the open lands, so a
+     *  failure wedges that voice's streaming for good (`debug_voice`). */
+    extern int  g_open_fail_count;
+    extern char g_last_open_fail[256];
+    extern int  g_last_open_errno;
+
 /** Longest sample directory we accept. The engine's filename buffers are 256
  *  bytes, so the directory is clamped to leave room for "/cubbi_a4_double.wav"
  *  — a directory that did not fit would otherwise truncate the sample name and

@@ -221,7 +221,9 @@ Then, with the chain loaded, open the module's editor and go to **Samples**:
    `scp myloop.wav ableton@move.local:/data/UserData/UserLibrary/Samples/`
 3. Jog through the list — the slot follows the highlighted file (live
    preview), so you hear each one before you commit. Click to commit, back out
-   to cancel.
+   to cancel. If you delete or rename an assigned file afterwards, that key
+   goes silent and everything else keeps playing — the assignment is kept, so
+   only that slot is affected.
 4. Play the key for that slot (slot 1 = C3): it plays your file.
 5. `STRT` / `END` now trim *that* file and the pads draw its waveform.
 6. `CLR` returns the slot to the shipped `samples/cubbi_aN.wav`.
@@ -252,6 +254,8 @@ measures which file actually played. Expect `PASS`, with the assigned tone at
 | Module missing from the list, nothing in the log | wrong directory/`id`/filename — must be `<id>/dsp.so` |
 | Loads, but no knobs / no pad layout | `serve_params` on the device (level 1): `chain_params`, `ui_hierarchy` |
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
+| Sound went away and never came back | ask for `debug_voice`: a voice with `p1` and `op1` is one whose open failed and stuck. Deleted/renamed sample files do this; P12/P13 in `VENDORED.md` are the fix |
+| One key is silent, its neighbours play | that slot's file is gone or unreadable — the assignment still points at it, so clear it (`CLR`) or reassign |
 | Everything works, output clips | `volume`/`gain`/`saturate`; CHOMPI's defaults are hot |
 | Browser opens, picking a file does nothing | the read-back key: `ssh ableton@move.local` then ask the plugin — `sample_file` must show the path, `sample_map` the assignment |
 | Assignment gone after a power cycle | `<module dir>/samples/samples.map` — check it exists and the module dir is writable |

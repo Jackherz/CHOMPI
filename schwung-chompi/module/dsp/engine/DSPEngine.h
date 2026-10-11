@@ -1508,6 +1508,67 @@ namespace daisy
 
         inline bool IsManagerEmpty() __attribute__((optimize("-O0"))) { return file_manager.request_fifo.IsEmpty(); }
 
+        /** Per-voice state, one line each, for diagnosing silence on a device
+         *  where the only other symptom is "no sound until I restart it". The
+         *  readings that decide whether a voice can make a sound at all: the
+         *  file it holds (size 0 = nothing to read), whether its open requests
+         *  reached the worker, and how far its last read went.
+         *
+         *  PORT (not a patch to existing firmware behaviour): the firmware had
+         *  no such accessor, and the voices are private to this class. */
+        int DescribeVoices(char* buf, size_t len)
+        {
+            if(buf == nullptr || len == 0)
+                return 0;
+            int off = 0;
+            for(size_t i = 0; i < kMaxPoly; i++)
+            {
+                const int n = snprintf(buf + off, len - (size_t)off,
+                                       "%sv%zu p%d(g%d/e%d) key%d sz%ld op%zu sk%zu rd%zu buf%zu dj%d dt%d last%zu ram%d slot%d %s\n",
+                                       i ? " | " : "", i,
+                                       chompi_voice[i].IsPlaying() ? 1 : 0,
+                                       chompi_voice[i].env_gate_ ? 1 : 0,
+                                       chompi_voice[i].env_.IsRunning() ? 1 : 0,
+                                       playing_key[i],
+                                       (long)f_size(&chompi_voice[i].fptr_read),
+                                       chompi_voice[i].open_requests_,
+                                       chompi_voice[i].seek_requests_,
+                                       chompi_voice[i].read_requests_,
+                                       chompi_voice[i].read_samps.GetNumElements(),
+                                       chompi_voice[i].deferred_jump ? 1 : 0,
+                                       chompi_voice[i].deferred_trig ? 1 : 0,
+                                       chompi_voice[i].last_read_size_,
+                                       chompi_voice[i].using_ram ? 1 : 0,
+                                       (int)chompi_voice[i].GetSlot(),
+                                       chompi_voice[i].fname_rx);
+                if(n <= 0 || n >= (int)(len - (size_t)off))
+                    break;
+                off += n;
+            }
+            char flags[kSlotModes * kSlotBanks * kSlotCount + 1];
+            for(size_t m = 0; m < kSlotModes; m++)
+                for(size_t b = 0; b < kSlotBanks; b++)
+                    for(size_t sl = 0; sl < kSlotCount; sl++)
+                        flags[(m * kSlotBanks + b) * kSlotCount + sl] =
+                            file_exists[m][b][sl] ? '1' : '0';
+            flags[kSlotModes * kSlotBanks * kSlotCount] = 0;
+            const int kn = snprintf(buf + off, len - (size_t)off,
+                                    "keyfifo=%zu filefifo=%zu refused=%zu fe=%s\n",
+                                    request_fifo.GetNumElements(),
+                                    file_manager.request_fifo.GetNumElements(),
+                                    file_manager.request_fifo.refused_pushes, flags);
+            const int en = snprintf(buf + off, len - (size_t)off,
+                                    "openfails=%d last='%s' errno=%d(%s)\n",
+                                    chompi::g_open_fail_count, chompi::g_last_open_fail,
+                                    chompi::g_last_open_errno,
+                                    strerror(chompi::g_last_open_errno));
+            if(en > 0 && en < (int)(len - (size_t)off))
+                off += en;
+            if(kn > 0 && kn < (int)(len - (size_t)off))
+                off += kn;
+            return off;
+        }
+
         // helper for stuck key hack
         inline int GetPlayingKey(size_t idx) { return playing_key[idx]; }
 

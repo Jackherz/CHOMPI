@@ -88,9 +88,31 @@ extern "C"
         else if(mode & FA_OPEN_ALWAYS)
             flags |= may_write_new ? O_CREAT : 0;
 
+        /* PORT P12: re-opening a file object that is already open must not
+         * leak the old descriptor.
+         *
+         * The engine re-opens a reader's FIL directly, and it skips the CLOSE
+         * when the file it holds is empty (`f_size() == 0`, in
+         * FileStreamingManager's CLOSE case and in SampleReader::OpenFile).
+         * FatFS is a library, so that cost the firmware nothing; here it is a
+         * kernel descriptor, and every slot that has no file -- every key
+         * pressed for an empty slot -- leaked one. The descriptor count is
+         * what eventually makes f_open fail, and a failed open used to silence
+         * the whole voice (see FileOpenFailed). */
+        if(fp->in_use.load(std::memory_order_relaxed))
+        {
+            ::close(fp->fd);
+            fp->in_use.store(false, std::memory_order_relaxed);
+        }
+
         const int fd = ::open(path, flags, 0644);
         if(fd < 0)
+        {
+            chompi::g_open_fail_count++;
+            snprintf(chompi::g_last_open_fail, sizeof(chompi::g_last_open_fail), "%s", path);
+            chompi::g_last_open_errno = errno;
             return errno_to_fresult(errno);
+        }
 
         struct stat st;
         if(fstat(fd, &st) != 0)

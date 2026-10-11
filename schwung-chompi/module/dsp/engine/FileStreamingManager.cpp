@@ -28,6 +28,8 @@ FileStreamingManager::Status FileStreamingManager::ProcessRequests()
                 retval = fres == FR_OK ? Status::OK : Status::ERR_READ;
                 if (retval == Status::OK)
                     static_cast<FileSampleReader*>(req.id_)->FileOpened();
+                else if (req.id_) /* PORT P13: see FileOpenFailed */
+                    static_cast<FileSampleReader*>(req.id_)->FileOpenFailed();
             }
 
             break;
