@@ -1,1 +1,6 @@
 build/
+
+# Runtime state written next to the samples (slot -> WAV assignments)
+samples/samples.map
+# Render harness output when the binary is run by hand from the module dir
+chompi_render.wav

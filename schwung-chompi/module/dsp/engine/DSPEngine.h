@@ -1314,46 +1314,17 @@ namespace daisy
          */
         static void GetFileNameForSlot(int slot, int b, VoiceMode m, char *name, bool dbl = false)
         {
-            char bankchar;
-            switch(b)
-            {
-                case 0:
-                    bankchar = 'a';
-                    break;
-                case 1:
-                    bankchar = 'b';
-                    break;
-                case 2:
-                    bankchar = 'c';
-                    break;
-                case 3:
-                    bankchar = 'd';
-                    break;
-                default:
-                    bankchar = 'e';
-            }
-
-            char mode[10];
-
-            if(m == VoiceMode::JAMMI)
-                strcpy(mode, "jammi");
-            else if(m == VoiceMode::CUBBI)
-                strcpy(mode, "cubbi");
-
-            char dbl_suffix[10];
-            if(dbl)
-                strcpy(dbl_suffix, "_double");
-            else
-                dbl_suffix[0] = '\0';
-
-            if (name)
-            {
-                // PORT PATCH P4: prefix the runtime sample directory instead of
-                // relying on the process working directory (SD root on hardware).
-                char bare[64];
-                sprintf(bare, "%s_%c%1d%s.wav", mode, bankchar, slot, dbl_suffix);
-                chompi::SamplePath(name, 256, bare);
-            }
+            /* PORT PATCH P9: naming moved into chompi::SlotSamplePath so a slot
+             * can carry a user-assigned sample (set_param "sample_file").
+             * Without an override it returns exactly the name this function
+             * used to build: "<sample_dir>/<mode>_<bank><slot>[_double].wav".
+             *
+             * Everything that names a slot file goes through here — the key
+             * playback path, SetVoiceSlot()'s RAM load, EraseStart() and the
+             * UpdateFileExists() scan — so one override table covers them all
+             * and a slot with an assigned sample is scanned as present. */
+            if(name)
+                chompi::SlotSamplePath((int)m, b, (int)slot, dbl, name, 256);
         }
 
         char fname[256];
@@ -1366,12 +1337,26 @@ namespace daisy
             GetFileNameForSlot(target, b, m, fname);
             GetFileNameForSlot(target, b, m, fname_double, true);
 
-            FileRequest req(FileRequest::Type::UNLINK, nullptr, fname, 0, nullptr, this);
-            file_manager.request_fifo.PushBack(req);
+            /* PORT PATCH P10: only unlink files inside our own sample directory.
+             * A slot may point at a WAV the user chose from the device library
+             * ("sample_file"), and CHOMPI's erase is not entitled to delete it.
+             * The counter tracks requests actually queued, so EraseFinished()
+             * still balances — this path is unused by the port today, but a
+             * future erase/record binding must not be able to destroy user
+             * data. */
+            if(chompi::IsManagedPath(fname))
+            {
+                FileRequest req(FileRequest::Type::UNLINK, nullptr, fname, 0, nullptr, this);
+                file_manager.request_fifo.PushBack(req);
+                erasing++;
+            }
 
-            FileRequest double_req(FileRequest::Type::UNLINK, nullptr, fname_double, 0, nullptr, this);
-            file_manager.request_fifo.PushBack(double_req);
-            erasing += 2;
+            if(chompi::IsManagedPath(fname_double))
+            {
+                FileRequest double_req(FileRequest::Type::UNLINK, nullptr, fname_double, 0, nullptr, this);
+                file_manager.request_fifo.PushBack(double_req);
+                erasing++;
+            }
         }
 
         inline void EraseFinished()

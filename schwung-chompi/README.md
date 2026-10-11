@@ -137,6 +137,20 @@ Two things worth knowing:
 * **No MIDI notes are declared.** Notes arrive where they arrive; the key map
   (`note_to_button`) is CHOMPI's own.
 
+## Instance lifecycle
+
+The module owns a single worker thread that does all file I/O (scans, map
+writes, sample loads) while the audio callback stays allocation- and I/O-free.
+It retires when the last instance is destroyed — the chain host `dlclose`s the
+library on a synth swap, so nothing may outlive it — and a later
+`create_instance` starts a fresh one. The instance registry is compacted on
+destroy, which also means a plugin that is loaded and unloaded repeatedly does
+not exhaust it. Both of these were one bug: the worker started from a
+never-reset one-shot latch and the registry count only ever grew, so the first
+destroy left every instance created afterwards silent. `tools/sample_map_probe`
+covers it — phase "after reload" renders the assigned sample across a
+`destroy_instance` + `create_instance` cycle and is silent without the fix.
+
 ## Verifying without a Move
 
 ```sh

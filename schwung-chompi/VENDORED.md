@@ -10,7 +10,7 @@ compile and run unchanged.
 checkout, so re-vendoring after a CHOMPI release is a copy plus the patches
 below.
 
-## The six patches
+## The port patches
 
 Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 
@@ -24,6 +24,8 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P6 | `third_party/daisysp/Filters/svf.cpp` | DaisySP assumes its own root on the include path |
 | P7 | `SampleReader.h` | `SetStartPoint`/`SetEndPoint` accept a value before the async OPEN lands (see below) |
 | P8 | `FileStreamingManager.cpp` | initialise `fres` — the past-EOF branch reaches the `fres == FR_OK` test without assigning it |
+| P9 | `DSPEngine.h` | `GetFileNameForSlot` delegates to `chompi::SlotSamplePath` so every path in the engine honours the slot override |
+| P10 | `DSPEngine.h` | `EraseStart` unlinks only files the port owns (`IsManagedPath`); `erasing` counts queued requests, not loop iterations |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -48,6 +50,22 @@ values are re-derived from the real size with no extra bookkeeping. Without
 it, sampled playback is silent and the reader issues an endless
 seek-to-start loop (the symptom: `debug_files` shows the slot present,
 `key_probe` reports peak 0).
+
+### P9–P10 in detail
+
+The port keeps a small override table: the UI can point any of slots 1–14 at
+an arbitrary WAV, and the map is persisted next to the samples so it survives
+a reload. Each patch closes one way the engine could sidestep it. Before P9
+the engine built convention names (`cubbi_a1.wav`, …) in several places —
+key playback, the RAM load behind `SetVoiceSlot`, `EraseStart`, the file-exists
+sweep — so an assigned sample played in some paths and not others depending on
+which voice mode and trigger you used. `GetFileNameForSlot` is now the single
+funnel and asks the port for the path. P10 keeps the reverse direction honest:
+`EraseStart` deletes sample files, and it must not delete a user's imported
+WAV that merely happens to be the slot's target. It unlinks only paths under
+the port's sample directory, and `erasing` now tracks outstanding erase
+requests rather than iterations of the polling loop (the old counter could
+report "done" while an unlink was still queued).
 
 ## Warnings the compiler still reports (all benign)
 

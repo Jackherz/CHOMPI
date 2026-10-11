@@ -104,6 +104,11 @@ struct ChompiInstance
     /* Flags raised by set_param (callback) and drained by the worker. */
     std::atomic<bool> want_scan_files{false};
 
+    /* The slot a samples-page edit applies to (set_param "slot"), and the
+     * dirty flag that asks the worker to persist the sample map. */
+    int               selected_slot = 1;
+    std::atomic<bool> map_dirty{false};
+
     /* Octave folding window for incoming notes. */
     std::atomic<int> octave{0};
 
@@ -130,8 +135,14 @@ struct ChompiInstance
     bool loop_recording = false;
 };
 
-static ChompiInstance* g_instances[CHOMPI_MAX_INSTANCES];
-static std::atomic<int> g_instance_count{0};
+static ChompiInstance*   g_instances[CHOMPI_MAX_INSTANCES];
+static std::atomic<int>  g_instance_count{0};
+/* True while chompi_io_worker() is running. The worker retires when the last
+ * instance goes away (it must not outlive the library — the chain host
+ * dlcloses it on a synth swap), and a later create has to be able to bring it
+ * back. It used to be a never-reset one-shot latch, so the first destroy
+ * silenced every instance created afterwards. */
+static std::atomic<bool> g_worker_active{false};
 static const host_api_v1_t* g_host_api = nullptr;
 
 static void set_err(ChompiInstance* inst, const char* msg)
@@ -204,9 +215,30 @@ static void* chompi_io_worker(void* arg)
 
             if(inst->want_scan_files.exchange(false))
                 inst->engine.UpdateFileExists();
+
+            /* Persist the sample map when an assignment landed. Off the
+             * callback by contract: this touches the filesystem. */
+            if(inst->map_dirty.exchange(false))
+            {
+                char map_path[CHOMPI_PATH_LEN];
+                snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
+                chompi::WriteSlotOverrideMap(map_path);
+            }
         }
-        if(!any_alive)
-            break;
+        if(!any_alive && g_instance_count.load(std::memory_order_acquire) == 0)
+        {
+            /* Retire — but only once nobody can be left waiting on us. A
+             * create publishes its instance BEFORE asking for a worker, so if
+             * one arrived in this window it saw g_worker_active still true and
+             * started nothing: we have to either hand the role over or keep
+             * it. Dropping the flag first makes that decision race-free. */
+            g_worker_active.store(false, std::memory_order_release);
+            if(g_instance_count.load(std::memory_order_acquire) == 0)
+                break;                                    /* nobody arrived */
+            if(!g_worker_active.exchange(true))          /* nobody took over */
+                continue;                                 /* keep working */
+            break;                                        /* another worker has it */
+        }
         usleep(500); /* 2 kHz: CHOMPI ran its SD callback at 1 kHz */
     }
     return nullptr;
@@ -214,14 +246,17 @@ static void* chompi_io_worker(void* arg)
 
 static void start_worker_if_needed()
 {
-    static std::atomic<bool> started{false};
-    bool expected = false;
-    if(started.compare_exchange_strong(expected, true))
+    if(g_worker_active.exchange(true))
+        return; /* already running */
+
+    pthread_t t;
+    if(pthread_create(&t, nullptr, chompi_io_worker, nullptr) == 0)
     {
-        pthread_t t;
-        if(pthread_create(&t, nullptr, chompi_io_worker, nullptr) == 0)
-            pthread_detach(t);
+        pthread_detach(t);
+        return;
     }
+    /* The thread never started, so the flag must not claim it did. */
+    g_worker_active.store(false, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------- params
@@ -338,6 +373,7 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
             slot = 0;
         if(slot > 15)
             slot = 15;
+        inst->selected_slot = (int)slot;
         e.SetVoiceSlot((size_t)slot, true);
     }
     else if(strcmp(key, "record") == 0)
@@ -366,6 +402,36 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         e.SetLooperScrub(f);
     else if(strcmp(key, "looper_dub_gain") == 0)
         e.IncrementLooperDubGain(f);
+    else if(strcmp(key, "sample_file") == 0)
+    {
+        /* The shadow UI's file browser hands us an absolute path. The map is
+         * keyed by the slot the user is editing (the `slot` param), so the
+         * flow is: pick Slot, browse, and that slot now plays that file. An
+         * empty value clears the assignment. */
+        const int mode = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
+        const int bank = e.GetBank();
+        const int slot = inst->selected_slot;
+        if(slot < 1 || slot > 14)
+        {
+            set_err(inst, "slot 15 is the recording buffer - assign to slots 1-14");
+            return;
+        }
+        if(val[0] == '\0')
+            chompi::ClearSlotOverride(mode, bank, slot);
+        else
+            chompi::SetSlotOverride(mode, bank, slot, val);
+        inst->map_dirty.store(true);
+        inst->want_scan_files.store(true); /* re-scan: the slot's file changed */
+    }
+    else if(strcmp(key, "sample_clear") == 0)
+    {
+        if(!b)
+            return;
+        const int mode = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
+        chompi::ClearSlotOverride(mode, e.GetBank(), inst->selected_slot);
+        inst->map_dirty.store(true);
+        inst->want_scan_files.store(true);
+    }
     else if(strcmp(key, "sample_dir") == 0)
     {
         /* Loader thread normally; a live change just re-points the prefix for
@@ -449,8 +515,12 @@ static const char* kChainParams
       "{\"key\":\"auto_loop\",\"name\":\"Loop\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
       "{\"key\":\"attack\",\"name\":\"Attack\",\"type\":\"float\",\"min\":0,\"max\":1},"
       "{\"key\":\"decay\",\"name\":\"Decay\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"start\",\"name\":\"Start\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"end\",\"name\":\"End\",\"type\":\"float\",\"min\":0,\"max\":1},"
+      /* PORT: start/end are trim points over the slot's WAV. wav_position gives
+       * them the waveform view and trim markers in the Shadow UI's edit mode
+       * (docs/MODULES.md). The host draws that from the file named by
+       * filepath_param, so nothing is asked of this plugin. */
+      "{\"key\":\"start\",\"name\":\"Start\",\"short_name\":\"STRT\",\"type\":\"wav_position\",\"mode\":\"start\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01},"
+      "{\"key\":\"end\",\"name\":\"End\",\"short_name\":\"END\",\"type\":\"wav_position\",\"mode\":\"end\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01},"
       "{\"key\":\"gain\",\"name\":\"Gain\",\"type\":\"float\",\"min\":0,\"max\":1},"
       "{\"key\":\"pan\",\"name\":\"Pan\",\"type\":\"float\",\"min\":0,\"max\":1},"
       "{\"key\":\"looper_record\",\"name\":\"Loop Rec\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"]},"
@@ -459,6 +529,13 @@ static const char* kChainParams
       "{\"key\":\"looper_pitch\",\"name\":\"Loop Pitch\",\"type\":\"float\",\"min\":-2,\"max\":2},"
       "{\"key\":\"looper_scrub\",\"name\":\"Scrub\",\"type\":\"float\",\"min\":-2,\"max\":2},"
       "{\"key\":\"looper_dub_gain\",\"name\":\"Dub Gain\",\"type\":\"float\",\"min\":-1,\"max\":1},"
+      /* The sample map. `root` keeps the browser on the device user data,
+       * `start_path` opens on the Move's own sample library. No nested
+       * objects in these entries on purpose: the chain host's C-side
+       * merge walks braces and keeps only the types it models (a filepath
+       * is not a knob). */
+      "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data\",\"start_path\":\"/data/UserData/UserLibrary/Samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
+      "{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},"
       "{\"key\":\"record\",\"name\":\"Chompi Rec\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
       "{\"key\":\"input_monitor\",\"name\":\"Monitor\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
       "{\"key\":\"input_gain\",\"name\":\"In Gain\",\"type\":\"float\",\"min\":0,\"max\":2},"
@@ -472,7 +549,7 @@ static const char* kUiHierarchy
     = "{\"levels\":{\"root\":{\"label\":\"CHOMPI\",\"params\":["
       "{\"key\":\"volume\"},{\"key\":\"filter\"},{\"key\":\"saturate\"},{\"key\":\"warble\"},"
       "{\"key\":\"delay_feedback\"},{\"key\":\"delay_time\"},{\"key\":\"reverb\"},{\"key\":\"varspeed\"},"
-      "{\"level\":\"tape\",\"label\":\"Tape\"},{\"level\":\"looper\",\"label\":\"Looper\"},"
+      "{\"level\":\"samples\",\"label\":\"Samples\"},{\"level\":\"tape\",\"label\":\"Tape\"},{\"level\":\"looper\",\"label\":\"Looper\"},"
       "{\"level\":\"recorder\",\"label\":\"Recorder\"},{\"level\":\"setup\",\"label\":\"Setup\"}],"
       "\"knobs\":[\"volume\",\"filter\",\"saturate\",\"warble\",\"delay_feedback\",\"delay_time\",\"reverb\",\"varspeed\"]},"
       "\"tape\":{\"label\":\"Tape\",\"params\":[{\"key\":\"reverse\"},{\"key\":\"sustain\"},{\"key\":\"auto_loop\"},"
@@ -485,9 +562,11 @@ static const char* kUiHierarchy
       "{\"key\":\"input_gain\"},{\"key\":\"input_source\"}],"
       "\"knobs\":[\"record\",\"input_monitor\",\"input_gain\",\"input_source\"]},"
       "\"setup\":{\"label\":\"Setup\",\"params\":[{\"key\":\"voice_mode\"},{\"key\":\"bank\"},{\"key\":\"slot\"},"
-      "{\"key\":\"octave\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]}}}";
+      "{\"key\":\"octave\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":0,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data\",\"start_path\":\"/data/UserData/UserLibrary/Samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
 
 // ---------------------------------------------------------------- plugin API
+
+static void  v2_destroy_instance(void* instance); /* used by create on a full registry */
 
 static void* v2_create_instance(const char* module_dir, const char* json_defaults)
 {
@@ -565,9 +644,30 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
                                0.01f /*attack*/, 1.f /*decay*/,
                                true /*autoloop*/, true /*sustain*/,
                                1.f /*gain*/, 0.5f /*pan*/);
+    /* Restore the user's sample assignments before the first scan, so slots
+     * they pointed at a library WAV read as present from the start. */
+    {
+        char map_path[CHOMPI_PATH_LEN];
+        snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
+        chompi::ReadSlotOverrideMap(map_path);
+    }
+
     inst->want_scan_files.store(true);
 
-    g_instances[g_instance_count.fetch_add(1)] = inst;
+    /* Publish the slot, THEN the count: the worker walks g_instances[0..count)
+     * and treats a null slot as "nothing here", so a count that ran ahead of
+     * the pointer would let it retire on a roster it cannot see. */
+    const int idx = g_instance_count.load(std::memory_order_acquire);
+    if(idx >= CHOMPI_MAX_INSTANCES)
+    {
+        /* Refuse rather than overrun the registry. */
+        set_err(inst, "no free instance slot");
+        v2_destroy_instance(inst);
+        return nullptr;
+    }
+    g_instances[idx] = inst;
+    g_instance_count.store(idx + 1, std::memory_order_release);
+
     start_worker_if_needed();
     return inst;
 }
@@ -583,11 +683,25 @@ static void v2_destroy_instance(void* instance)
      * stopping flag every 500 us). */
     usleep(2000);
 
-    const int count = g_instance_count.load();
-    for(int i = 0; i < count; i++)
+    /* Remove it AND shrink the count. The count used to only ever grow, so a
+     * few synth swaps walked g_instances[] off the end of the array; and with
+     * the slot nulled but the count unchanged, the worker read an empty roster
+     * and retired. Compact by moving the last live slot down: the worker only
+     * dereferences slots it saw non-null, and every slot it can still see is
+     * live. */
+    const int count = g_instance_count.load(std::memory_order_acquire);
+    int       removed = -1;
+    for(int i = 0; i < count && removed < 0; i++)
     {
         if(g_instances[i] == inst)
-            g_instances[i] = nullptr;
+            removed = i;
+    }
+    if(removed >= 0)
+    {
+        const int last = count - 1;
+        g_instances[removed] = (removed == last) ? nullptr : g_instances[last];
+        g_instances[last]    = nullptr;
+        g_instance_count.store(last, std::memory_order_release);
     }
 
     free(inst->loop_mem);
@@ -699,6 +813,40 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%s", ""); /* one mixed voice for now */
     if(strcmp(key, "sample_dir") == 0)
         return snprintf(buf, buf_len, "%s", chompi::g_sample_dir);
+    if(strcmp(key, "sample_file") == 0)
+    {
+        /* What the selected slot plays right now — the assigned sample if
+         * there is one, otherwise the convention name. The host reads this
+         * back to seed the browser (and to draw the wav_position waveform),
+         * so it must be the EFFECTIVE path, not the assignment. */
+        const int mode = (inst->engine.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
+        char      path[chompi::kSlotPathMax];
+        chompi::SlotSamplePath(mode, inst->engine.GetBank(), inst->selected_slot,
+                               false, path, sizeof(path));
+        return snprintf(buf, buf_len, "%s", path);
+    }
+    if(strcmp(key, "sample_map") == 0)
+    {
+        /* Diagnostic: the assignments for the current mode/bank, as
+         * "slot=path;" pairs. Empty when everything uses convention names. */
+        const int mode  = (inst->engine.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
+        const int bank  = inst->engine.GetBank();
+        int       off   = 0;
+        for(int slot = 1; slot <= 14 && off < (int)buf_len - 1; slot++)
+        {
+            if(!chompi::SlotHasOverride(mode, bank, slot))
+                continue;
+            char path[chompi::kSlotPathMax];
+            chompi::SlotSamplePath(mode, bank, slot, false, path, sizeof(path));
+            const int n = snprintf(buf + off, buf_len - (size_t)off, "%d=%s;", slot, path);
+            if(n <= 0 || n >= (int)(buf_len - (size_t)off))
+                break;
+            off += n;
+        }
+        return off;
+    }
+    if(strcmp(key, "sample_slot") == 0)
+        return snprintf(buf, buf_len, "%d", inst->selected_slot);
     if(strcmp(key, "voice_mode") == 0)
         return snprintf(buf, buf_len, "%s",
                         inst->engine.GetVoiceMode() == daisy::VoiceMode::CUBBI ? "cubbi" : "jammi");
