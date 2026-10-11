@@ -23,6 +23,10 @@ samples/                     two CUBBI samples so the port is testable
 
 ## Build
 
+Run these from inside `schwung-chompi/` (there is no Makefile at the repo
+root, and this directory only exists on the `arena/fd058e6a-chompi` branch —
+see [TESTING.md](TESTING.md) step 0).
+
 ```sh
 make host        # x86-64 .so for this machine + everything below
 make tools       # ABI probes -> build/serve_params, build/state_roundtrip, build/key_probe
@@ -30,6 +34,7 @@ make render_test # offline render harness
 make render      # 6 s of audio per scenario -> build/render/chompi_{ram,cubbi,record}.wav
 make aarch64     # device .so (needs an aarch64 toolchain; see below)
 make module      # stage build/module/ = the drop-in directory for the Move
+make check       # verify the device artifacts (glibc floor + plugin export)
 ```
 
 The two `.so`s are the same sources; only the target differs. Nothing about
@@ -48,8 +53,16 @@ The build targets **glibc 2.17** (`GLIBC=2.17`, override if you like) and is
 linked `BIND_NOW`. zig's default target is 2.27, which needs
 `expf`/`exp2f`/`logf`/`powf@GLIBC_2.27` — a 2.17 build binds the older symbol
 versions that every newer glibc still provides, so the same `.so` loads on old
-and new Move firmware alike. Verified with
-`readelf --version-info … | grep -o 'GLIBC_[0-9.]*' | sort -u` → `GLIBC_2.17`.
+and new Move firmware alike. `make check` verifies it (a self-contained Python
+ELF reader, so it works on macOS too):
+
+```
+build/module/dsp.so: 2906496 bytes
+  arch           AArch64 64-bit
+  export         move_plugin_init_v2  ✓
+  glibc floor    GLIBC_2.17 ≤ 2.17  ✓
+  result         OK
+```
 
 **Deploy and test on the Move:** see [TESTING.md](TESTING.md). Short version:
 
@@ -77,7 +90,8 @@ samples directory is the default because `create_instance()` seeds
 `sample_dir` to `<module dir>/samples`; `set_param("sample_dir", …)` moves it
 at runtime (and triggers a rescan).
 
-**Samples are not bundled beyond the two CUBBI files** in `samples/`. The full
+**Samples are not bundled beyond the two CUBBI files** in `samples/` —
+`make samples-full` copies the whole set in from `firmware/card-profiles/`. The full
 set lives in this repo at `firmware/card-profiles/tape-2.0/` (`cubbi_*.wav`,
 `jammi_*.wav`) — MIT-licensed, so copying them into
 `.../chompi/samples/` is fine. The engine scans for slots 1–14 across banks

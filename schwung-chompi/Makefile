@@ -62,7 +62,7 @@ ifeq ($(ZIG),1)
 CROSS    := $(ZIG_BIN) c++ -target aarch64-linux-gnu.$(GLIBC)
 endif
 
-.PHONY: all host render aarch64 module tools tools-aarch64 deploy probe logs logs-off clean
+.PHONY: all host render aarch64 module tools tools-aarch64 check deploy probe logs logs-off samples-full clean
 
 all: host
 
@@ -126,6 +126,15 @@ module: $(AARCH64_OUT) module/module.json
 	@echo "staged $(MODULE_STAGE):"
 	@ls -la $(MODULE_STAGE) $(MODULE_STAGE)/samples
 
+# The full CHOMPI sample set (MIT, in this repo) — the two files in samples/
+# are enough to test, this is what you actually want to play with. Copies the
+# tape-2.0 card's CUBBI + JAMMI wavs (~150 MB) into samples/.
+SAMPLES_SRC ?= ../firmware/card-profiles/tape-2.0
+samples-full:
+	@test -d $(SAMPLES_SRC) || { echo "not found: $(SAMPLES_SRC) — run from the repo checkout, or set SAMPLES_SRC="; exit 1; }
+	cp $(SAMPLES_SRC)/cubbi_*.wav $(SAMPLES_SRC)/jammi_*.wav samples/
+	@ls samples/ | wc -l
+
 # --- deploy to a Move on the LAN -------------------------------------------
 # MOVE=move.local MOVE_USER=ableton by default (Schwung's SSH setup puts the
 # key in /data/authorized_keys). Override for another host/port:
@@ -160,6 +169,11 @@ logs:
 
 logs-off:
 	$(SSH) "rm -f /data/UserData/schwung/debug_log_on"
+
+# Verify the device artifacts without readelf (works on macOS too).
+check: module tools-aarch64
+	python3 tools/check_abi.py build/module/dsp.so --module
+	@for p in $(TOOLS_A64); do python3 tools/check_abi.py $$p; done
 
 clean:
 	rm -rf $(BUILD)

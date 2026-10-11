@@ -10,26 +10,64 @@ Schwung's installer sets that up; Cyberduck/SFTP to `move.local` works too).
 
 ---
 
-## 0. What you need on the computer
+## 0. Get the code and build it
+
+**The port is not in `main`.** It lives on the branch
+`arena/fd058e6a-chompi` (PR #1), so a plain clone of the repo will not have a
+`schwung-chompi/` directory at all. Clone it with the branch, sparse so you
+skip the 160 MB card images:
+
+```sh
+git clone --depth 1 --filter=blob:none --sparse \
+    -b arena/fd058e6a-chompi https://github.com/Jackherz/CHOMPI.git
+cd CHOMPI
+git sparse-checkout set schwung-chompi firmware/card-profiles/tape-2.0
+cd schwung-chompi
+```
+
+`make` must run **from inside `schwung-chompi/`** — there is no Makefile at the
+repo root, and running it elsewhere gives
+`make: *** No rule to make target 'probe'. Stop.`
 
 ```sh
 python3 -m venv /tmp/zigvenv && /tmp/zigvenv/bin/pip install ziglang
 make module ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
+make check  ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
 ```
 
-That produces `build/module/` — `dsp.so` + `module.json` + `samples/`. The
-zig build targets **glibc 2.17**, so the `.so` loads on any Move firmware
-(verified with `readelf --version-info`: nothing newer than `GLIBC_2.17`).
+`make module` produces `build/module/` — `dsp.so` + `module.json` +
+`samples/`. `make check` then verifies the one thing that would otherwise fail
+silently on the Move: that the `.so` needs nothing newer than **glibc 2.17**
+(the zig build targets it deliberately — zig's default is 2.27) and exports
+`move_plugin_init_v2`:
 
-Check the same thing yourself after any toolchain change:
+```
+build/module/dsp.so: 2906496 bytes
+  arch           AArch64 64-bit
+  export         move_plugin_init_v2  ✓
+  glibc versions GLIBC_2.17
+  glibc floor    GLIBC_2.17 ≤ 2.17  ✓
+  result         OK
+```
+
+`make check` uses `tools/check_abi.py`, a plain Python ELF reader, so it works
+on macOS and Windows too — no `readelf`, no binutils. (On Linux,
+`readelf --version-info build/module/dsp.so | grep -o 'GLIBC_[0-9.]*' | sort -u`
+says the same thing.)
+
+Two macOS notes: the system `make` is GNU Make 3.81, which is old but handles
+everything here; and `zip`/`unzip` are fine, but `scp` needs the Move reachable
+as `move.local` (mDNS) — on some networks use the IP instead:
+`make probe MOVE=192.168.x.y`.
+
+### More samples (optional, but you want this)
+
+`samples/` ships two CUBBI files so the port is testable out of the box. The
+real set is in this repo:
 
 ```sh
-readelf --version-info build/module/dsp.so | grep -o 'GLIBC_[0-9.]*' | sort -u
-readelf --dyn-syms  build/module/dsp.so | grep move_plugin_init_v2
+make samples-full          # copies cubbi_* + jammi_* into samples/ (~150 MB)
 ```
-
-Both must be non-empty; a missing `move_plugin_init_v2` export means the chain
-host's `dlopen` finds nothing to call.
 
 ---
 
@@ -49,6 +87,9 @@ staged module to `/data/UserData/schwung/chompi-probe/` on the Move. Then:
 ```sh
 ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./serve_params ./dsp.so'
 ```
+
+(The `Permanently added 'move.local' … to the list of known hosts` line is
+just SSH accepting the host key the first time — harmless.)
 
 Expect four sections. The important ones:
 
@@ -155,7 +196,9 @@ In order, each step isolates one subsystem:
 
 | Symptom | Where to look |
 | --- | --- |
-| `dlopen` error mentioning `GLIBC_2.2x not found` | toolchain: rebuild with `ZIG=1` (targets 2.17) |
+| `dlopen` error mentioning `GLIBC_2.2x not found` | toolchain: rebuild with `ZIG=1` (targets 2.17), confirm with `make check` |
+| `make: *** No rule to make target 'probe'` | you are not inside `schwung-chompi/`, or on `main` instead of the `arena/…` branch — see step 0 |
+| `cd: /data/UserData/…/chompi-probe: No such file or directory` | `make probe` did not run (it creates that directory) — fix step 0 first |
 | Module missing from the list, nothing in the log | wrong directory/`id`/filename — must be `<id>/dsp.so` |
 | Loads, but no knobs / no pad layout | `serve_params` on the device (level 1): `chain_params`, `ui_hierarchy` |
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
