@@ -23,6 +23,7 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P5 | `RamBuffer.h` | `kMaxRamBuffSize` becomes `CHOMPI_RAM_BUFFER_SAMPLES` (build-time; firmware hardcodes the 32 MB SDRAM arena) |
 | P6 | `third_party/daisysp/Filters/svf.cpp` | DaisySP assumes its own root on the include path |
 | P7 | `SampleReader.h` | `SetStartPoint`/`SetEndPoint` accept a value before the async OPEN lands (see below) |
+| P8 | `FileStreamingManager.cpp` | initialise `fres` — the past-EOF branch reaches the `fres == FR_OK` test without assigning it |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -47,6 +48,21 @@ values are re-derived from the real size with no extra bookkeeping. Without
 it, sampled playback is silent and the reader issues an endless
 seek-to-start loop (the symptom: `debug_files` shows the slot present,
 `key_probe` reports peak 0).
+
+## Warnings the compiler still reports (all benign)
+
+Building with clang (which is what zig uses) is noisier than the firmware's
+GCC. These come from CHOMPI's own code and are **not** patched:
+
+| warning | why it is fine |
+| --- | --- |
+| `-Wvla-cxx-extension` — `float monitor[2][size]` in `DSPEngine.h:448` | a C99 VLA used in C++; both GCC and clang accept it, and `size` is always `CHOMPI_BLOCK` at the call sites |
+| `-Wunknown-attributes` — `__attribute__((optimize("-O0")))` on `IsManagerEmpty()` | a GCC-only attribute clang ignores; the function only reads a flag the worker maintains, so the optimisation level is not load-bearing |
+| `-Wunused-private-field` — `loop_end`, `sr_`, `done_` | upstream dead members |
+| `-Wnon-c-typedef-for-linkage` — `typedef struct { … } FIL` | our compat shim; the anonymous struct is given a name by the typedef, which is the intent |
+
+None of them change code generation in a way that matters; the port builds
+clean under GCC (`make host`) and warning-light under clang.
 
 ## The compat layer (`module/dsp/compat/`)
 

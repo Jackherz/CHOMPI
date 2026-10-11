@@ -7,7 +7,11 @@ using namespace daisy;
 
 FileStreamingManager::Status FileStreamingManager::ProcessRequests()
 {
-    FRESULT fres;
+    // PORT PATCH P8: upstream leaves this uninitialised. The READ path can
+    // reach `fres == FR_OK` without assigning it (the past-EOF branch sets
+    // retval only), which is UB and reads as a stale/failed read. Initialise
+    // it; the behaviour of every reachable path is unchanged.
+    FRESULT fres = FR_NOT_READY;
     Status retval = Status::ERR_UNKNOWN;
     if (!request_fifo.IsEmpty())
     {
