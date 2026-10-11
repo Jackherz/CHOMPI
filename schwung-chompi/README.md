@@ -45,8 +45,8 @@ entry point the chain host calls, through the same v2 ABI structs.
 **Cross-compiling:** zig works without installing a full toolchain:
 
 ```sh
-python3 -m venv /tmp/zigvenv && /tmp/zigvenv/bin/pip install ziglang
-make module ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
+python3 -m venv /tmp/zigvenv && /tmp/zigvenv/bin/pip install -q ziglang
+make module ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
 ```
 
 The build targets **glibc 2.17** (`GLIBC=2.17`, override if you like) and is
@@ -67,8 +67,8 @@ build/module/dsp.so: 2906496 bytes
 **Deploy and test on the Move:** see [TESTING.md](TESTING.md). Short version:
 
 ```sh
-make probe  ZIG=1 ZIG_BIN=…   # cross-build the ABI probes + copy to the Move
-make deploy ZIG=1 ZIG_BIN=…   # install into modules/sound_generators/chompi/
+make probe  ZIG=1 ZIG_BIN="…/python3 -m ziglang"   # build + copy probes to the Move
+make deploy ZIG=1 ZIG_BIN="…/python3 -m ziglang"   # install into modules/sound_generators/chompi/
 make logs                     # enable + tail Schwung's debug.log
 ```
 

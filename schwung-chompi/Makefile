@@ -142,12 +142,14 @@ samples-full:
 MOVE      ?= move.local
 MOVE_USER ?= ableton
 REMOTE_DIR = /data/UserData/schwung/modules/sound_generators/chompi
-SSH       := ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new $(MOVE_USER)@$(MOVE)
+SSH       ?= ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new
+SCP       ?= scp -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new
+REMOTE    ?= $(MOVE_USER)@$(MOVE)
 
 deploy: module
-	$(SSH) "mkdir -p $(REMOTE_DIR)/samples"
-	scp build/module/dsp.so build/module/module.json $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)/
-	scp build/module/samples/*.wav $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)/samples/
+	$(SSH) $(REMOTE) "mkdir -p $(REMOTE_DIR)/samples"
+	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):$(REMOTE_DIR)/
+	$(SCP) build/module/samples/*.wav $(REMOTE):$(REMOTE_DIR)/samples/
 	@echo "deployed to $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)"
 	@echo "reload the chain (or reboot) to pick it up; watch: make logs"
 
@@ -156,19 +158,19 @@ deploy: module
 #   make probe MOVE=move.local
 #   ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./key_probe ./dsp.so <module_dir> 2'
 probe: tools-aarch64 module
-	$(SSH) "mkdir -p /data/UserData/schwung/chompi-probe/samples"
-	scp $(TOOLS_A64) $(MOVE_USER)@$(MOVE):/data/UserData/schwung/chompi-probe/
-	scp build/module/dsp.so build/module/module.json $(MOVE_USER)@$(MOVE):/data/UserData/schwung/chompi-probe/
-	scp build/module/samples/*.wav $(MOVE_USER)@$(MOVE):/data/UserData/schwung/chompi-probe/samples/
+	$(SSH) $(REMOTE) "mkdir -p /data/UserData/schwung/chompi-probe/samples"
+	$(SCP) $(TOOLS_A64) $(REMOTE):/data/UserData/schwung/chompi-probe/
+	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):/data/UserData/schwung/chompi-probe/
+	$(SCP) build/module/samples/*.wav $(REMOTE):/data/UserData/schwung/chompi-probe/samples/
 	@echo "probes staged in /data/UserData/schwung/chompi-probe on $(MOVE); run e.g."
 	@echo "  ssh $(MOVE_USER)@$(MOVE) 'cd /data/UserData/schwung/chompi-probe && ./serve_params ./dsp.so chain_params ui_hierarchy && ./key_probe ./dsp.so . 2'"
 
 # Schwung's log: opt-in, then tail it.
 logs:
-	$(SSH) "touch /data/UserData/schwung/debug_log_on && tail -n 80 /data/UserData/schwung/debug.log"
+	$(SSH) $(REMOTE) "touch /data/UserData/schwung/debug_log_on && tail -n 80 /data/UserData/schwung/debug.log"
 
 logs-off:
-	$(SSH) "rm -f /data/UserData/schwung/debug_log_on"
+	$(SSH) $(REMOTE) "rm -f /data/UserData/schwung/debug_log_on"
 
 # Verify the device artifacts without readelf (works on macOS too).
 check: module tools-aarch64

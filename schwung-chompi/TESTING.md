@@ -30,16 +30,25 @@ repo root, and running it elsewhere gives
 `make: *** No rule to make target 'probe'. Stop.`
 
 ```sh
-python3 -m venv /tmp/zigvenv && /tmp/zigvenv/bin/pip install ziglang
-make module ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
-make check  ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
+python3 -m venv /tmp/zigvenv
+/tmp/zigvenv/bin/pip install -q ziglang
+
+# builds the device .so + the three test programs, then copies them to the
+# Move at /data/UserData/schwung/chompi-probe/  (scratch dir — this does NOT
+# install anything into modules/, nothing is touched yet)
+make probe ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
 ```
 
-`make module` produces `build/module/` — `dsp.so` + `module.json` +
-`samples/`. `make check` then verifies the one thing that would otherwise fail
-silently on the Move: that the `.so` needs nothing newer than **glibc 2.17**
-(the zig build targets it deliberately — zig's default is 2.27) and exports
-`move_plugin_init_v2`:
+The `python3 -m ziglang` form matters: it finds zig inside the venv whatever
+your Python version is (the `site-packages/.../ziglang/zig` path differs
+between Pythons), so this works on any Mac. If your SSH user or hostname
+differ from `ableton@move.local`, add `MOVE_USER=… MOVE=…`.
+
+`make module` alone just produces `build/module/` — `dsp.so` +
+`module.json` + `samples/`. `make check` verifies the one thing that would
+otherwise fail silently on the Move: that the `.so` needs nothing newer than
+**glibc 2.17** (the zig build targets it deliberately — zig's default is 2.27)
+and exports `move_plugin_init_v2`:
 
 ```
 build/module/dsp.so: 2906496 bytes
@@ -67,6 +76,7 @@ real set is in this repo:
 
 ```sh
 make samples-full          # copies cubbi_* + jammi_* into samples/ (~150 MB)
+                           # (needs the firmware/card-profiles checkout from step 0)
 ```
 
 ---
@@ -77,12 +87,8 @@ This runs the plugin **on the Move**, through the same v2 ABI the chain host
 uses, with no involvement from the Shadow UI. If the module is going to fail
 on the device, it fails here first, with a readable error.
 
-```sh
-make probe ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
-```
-
-`make probe` cross-compiles the three probes, then copies the probes + the
-staged module to `/data/UserData/schwung/chompi-probe/` on the Move. Then:
+`make probe` (step 0) already copied everything to
+`/data/UserData/schwung/chompi-probe/` on the Move. Run the probes there:
 
 ```sh
 ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./serve_params ./dsp.so'
@@ -130,7 +136,7 @@ When you're done, `rm -rf /data/UserData/schwung/chompi-probe`.
 ## 2. Install it for real and load it in a chain
 
 ```sh
-make deploy ZIG=1 ZIG_BIN=/tmp/zigvenv/lib/python3.11/site-packages/ziglang/zig
+make deploy ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
 ```
 
 That copies the staged module to
