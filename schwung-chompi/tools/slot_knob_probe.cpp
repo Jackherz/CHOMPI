@@ -286,6 +286,13 @@ int main(int argc, char** argv)
         }
         if(cleaned)
             printf("cleaned %d placeholder file(s) from samples/\n", cleaned);
+        /* The map too: this probe writes slot overrides through the plugin, and
+         * a leftover assignment (especially one pointing at /tmp) would change
+         * what the next probe or a hand-run of the module in this directory
+         * hears. */
+        char map_path[512];
+        snprintf(map_path, sizeof map_path, "%s/samples/samples.map", dir);
+        remove(map_path);
     }
 
     printf("\n%s\n", fails ? "FAIL: moving the slot knob silences the voice"
