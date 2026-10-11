@@ -69,14 +69,27 @@ everything here; and `zip`/`unzip` are fine, but `scp` needs the Move reachable
 as `move.local` (mDNS) — on some networks use the IP instead:
 `make probe MOVE=192.168.x.y`.
 
-### More samples (optional, but you want this)
+### The full sample set (do this once — the Samples page is empty without it)
 
-`samples/` ships two CUBBI files so the port is testable out of the box. The
-real set is in this repo:
+`samples/` ships three files (bank a's first CUBBI and JAMMI samples) so the
+port is testable out of the box, and it is *not* obvious from the UI that the
+rest are missing: keys 1–2 play, everything else is silent. Push the whole card
+set once and leave it there:
 
 ```sh
-make samples-full          # copies cubbi_* + jammi_* into samples/ (~150 MB)
-                           # (needs the firmware/card-profiles checkout from step 0)
+# same flags step 0 uses for the ZIG=1 toolchain
+make deploy-full ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
+# a normal deploy, plus the 168-WAV card set (~161 MB, one scp; the files stay
+# on the device afterwards)
+```
+
+When the deploy finishes it prints how many WAVs the device now has — 168 plus
+the three bundled ones is what "everything is there" looks like. `make deploy`
+alone re-sends only `samples/` and reminds you if the device is still on the
+bundled few. To stage the set locally instead (for the offline probes):
+
+```sh
+make samples-full          # copies cubbi_* + jammi_* into samples/ (~161 MB)
 ```
 
 ---
@@ -106,8 +119,8 @@ Expect four sections. The important ones:
 
 | key | expected |
 | --- | --- |
-| `chain_params` | 2127 bytes, 31 `{…}` entries, *starts with `[` and ends with `]`* |
-| `ui_hierarchy` | 1352 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup |
+| `chain_params` | 2796 bytes, 35 `{…}` entries, *starts with `[` and ends with `]`* |
+| `ui_hierarchy` | 1864 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
 | `split_voices` | empty (`(none)`) — that is the correct answer, not a failure |
 | `state` | 16-key flat JSON |
 
@@ -192,12 +205,28 @@ In order, each step isolates one subsystem:
    `looper_scrub`. Writes `looper.wav` and `temp_rec.wav` next to the samples —
    check the directory is writable (`ls -la` after a few seconds of recording;
    a 0-byte `looper.wav` means the write path failed).
+   Then **clear it**: the Looper page's `Clear Loop` cell. It is a tape stop —
+   the loop winds down over about a second and then stays silent; recording
+   again afterwards must make a fresh loop (not a dub of the cleared one).
+5. **Mode / bank / slot** (Setup page): with the full card set deployed, in
+   **CUBBI** each key plays its own sample and the `bank` knob changes all of
+   them (bank b's key 1 sounds different from bank a's). In **JAMMI** every key
+   plays the *selected* slot at the note's speed: move `slot` and press a key,
+   then move `bank` and press again — each press plays the newly selected
+   sample, and `slot` 15 plays CHOMPI's built-in buffer. Switching
+   JAMMI → CUBBI → JAMMI mid-phrase must not leave the module silent.
+6. **FX route** (Setup page, `FX Route`): set a long delay
+   (`delay_time` up, `delay_feedback` up), record a short loop in `pre`, then
+   listen back with `delay_feedback` at zero — the delay's tail is *in* the
+   loop. Clear, switch to `post` and repeat: the loop is dry, and the FX now
+   colours its playback instead.
 5. **Audio in**: `input_source`, `input_gain`, `input_monitor` — play a source
    into the Move's input and confirm it monitors, then record it.
-6. **State**: turn knobs, save the Set, power-cycle, reload. Values must come
-   back — that is `state` doing its job. If a value resets, tell me which
-   knob; the mirror in `ChompiInstance::Saved` is the likely suspect.
-7. **The ugly cases**: pull the sample files out from under it, load a set with
+7. **State**: turn knobs, save the Set, power-cycle, reload. Values must come
+   back — that is `state` doing its job (`fx_pre_loop` is in there too now). If
+   a value resets, tell me which knob; the mirror in `ChompiInstance::Saved` is
+   the likely suspect.
+8. **The ugly cases**: pull the sample files out from under it, load a set with
    a missing bank, switch `voice_mode` mid-note. It should stay silent and
    stable, not reboot the chain.
 
@@ -256,6 +285,9 @@ measures which file actually played. Expect `PASS`, with the assigned tone at
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
 | Sound went away and never came back | ask for `debug_voice`: a voice with `p1` and `op1` is one whose open failed and stuck. Deleted/renamed sample files do this; P12/P13 in `VENDORED.md` are the fix |
 | One key is silent, its neighbours play | that slot's file is gone or unreadable — the assignment still points at it, so clear it (`CLR`) or reassign |
+| Only the first key or two make sound, the rest of the Samples page is silent | the device is still on the three bundled WAVs — `make deploy-full` (this is the classic one; step 0 has the whole story) |
+| In JAMMI, `slot`/`bank` seem to do nothing | they bind on the **next key press** by design (VENDORED P14/P17), and slot 15 is the RAM buffer, not a file — press a key after turning the knob, and check `debug_voice`'s summary line (`mode=… bank=… sel=…`) |
+| Switching JAMMI → CUBBI goes silent | CUBBI keys need their slot's file: with only the bundled samples there are two playable keys (C3/D3). `make deploy-full`, then check `debug_files` for `cubbi/0:110000000000001…` |
 | Everything works, output clips | `volume`/`gain`/`saturate`; CHOMPI's defaults are hot |
 | Browser opens, picking a file does nothing | the read-back key: `ssh ableton@move.local` then ask the plugin — `sample_file` must show the path, `sample_map` the assignment |
 | Assignment gone after a power cycle | `<module dir>/samples/samples.map` — check it exists and the module dir is writable |

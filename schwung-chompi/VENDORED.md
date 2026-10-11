@@ -29,6 +29,10 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P11 | `compat/chompi_platform.cpp` | `f_open` refuses to create or truncate files outside the module's own sample directory |
 | P12 | `compat/chompi_platform.cpp` | `f_open` closes the previous descriptor when a file object is re-opened (the engine skips CLOSE for empty files; each skip leaked a kernel fd) |
 | P13 | `SampleReader.h` + `FileStreamingManager.cpp` | a failed open calls the new `FileOpenFailed()`, releasing the pending-open count instead of wedging the voice |
+| P14 | `DSPEngine.h` | JAMMI binds the selected sample on the key path (it used to open a file only from `SetVoiceSlot()`, which the port's slot knob does not drive — so JAMMI played whatever the voice last held and the Mode/Bank/Slot knobs looked dead) |
+| P15 | `DSPEngine.h` | FX routing: `fx_pre_loop_target` remembers what was asked for, and the crossfade lands on that instead of on "the other side", so two quick flips end where the user left it |
+| P16 | `DSPEngine.h` | `ClearLooper()` — the hardware's record+play gesture as one call, for the `loop_clear` parameter |
+| P17 | `DSPEngine.h` | `SelectVoiceSlot()` — record the selected slot without opening files, so the Samples page's slot knob can steer JAMMI without the sweep of opens that used to wedge a reader |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -118,6 +122,56 @@ is gone is silent while its neighbours keep playing.
 (a `CountingFifo` that counts refused `PushBack`s — every call site ignores the
 answer — and `Engine::DescribeVoices`, served as `debug_voice`). Both are
 additive; P12/P13 are the behaviour changes.
+
+### P14–P17 in detail
+
+The batch that made the Setup page and the looper behave like the instrument.
+
+**P14 — JAMMI had no way to reach its own samples.** Upstream JAMMI opens a file
+in exactly one place: `SetVoiceSlot()`, which the hardware UI calls when its slot
+knob picks a tape. The port's slot knob is the Samples page's selection and
+deliberately does not rebind voices (a swept knob's burst of opens was wedging
+readers — that is why the knob is selection-only in the first place), so JAMMI
+had no bind at all: every key replayed whatever file the voice last held. A
+fresh module therefore played the built-in RAM tone for slot 15 and nothing else
+could change it — the Mode, Bank and Slot knobs were inert in JAMMI, which is
+what "switching to cubbi makes the sound disappear" and "bank and slot do
+nothing" turned out to be.
+
+JAMMI now binds in the key path, mirroring CUBBI: the whole keyboard plays the
+selected jammi sample, the note sets the speed, and the bind happens once per
+selection change (bound mode/bank/slot compared against the voice's, plus the
+existing `copy_occurred` signal that a sample assignment raises), never once per
+key press. Slot 15 keeps its upstream meaning — the recording buffer — and now
+tags the voice too, so moving between the buffer and a card slot and back works
+in both directions.
+
+**P17** is the other half: `SelectVoiceSlot()` gives the port a way to *record*
+the selection (which the Samples page and JAMMI both need) without the opens P14
+makes unnecessary. `SetVoiceSlot()` is untouched and still the one call that
+does both, for the paths that want that.
+
+**P15 — the FX routing crossfade could land on the wrong side.** `fx_pre_loop`
+was flipped by the fade's completion (`fx_pre_loop = !fx_pre_loop`), so asking
+for `pre` while a fade to `post` was in flight was a no-op and the engine ended
+on `post`. It now follows `fx_pre_loop_target`, set by `SetFxPreLooper()`; the
+fade still decides *when* the routing changes, but not *which* side it lands on.
+`chompi_move.cpp` only forwards a change when the requested value differs, so a
+knob that re-writes the same option costs nothing.
+
+**P16** exposes the clear. The hardware clears by holding record+play until
+`CheckReset()` times out; a chain host has no pair of buttons to hold, so
+`loop_clear` calls the same `LooperEngine::Reset()` the gesture ends in. It is
+audible as a tape stop — the sampler winds its speed down and drains the remains
+of the loop (~1 s) — which is upstream behaviour, not a port artefact.
+
+Also in this batch, in the adapter rather than the firmware: momentary enums
+(`sample_clear`, `loop_clear`) accept both the option name ("Clear") and the
+index ("1") the shadow UI writes when it has no value to read back, the module
+starts on slot 1 instead of the RAM buffer so it makes a musical sound out of
+the box, and `debug_voice` gained a summary line (`mode=… bank=… sel=… fx_pre=…
+loop_empty=…`) because the only other way to tell a dead knob from a dead bind
+was to listen.
 
 ## Warnings the compiler still reports (all benign)
 

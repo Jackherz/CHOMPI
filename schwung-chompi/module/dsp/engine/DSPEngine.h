@@ -196,6 +196,9 @@ namespace daisy
             file_manager.Init(samplerate);
 
             fx_pre_loop = true;
+            /* PORT PATCH P15: the routing the user asked for, which the
+             * crossfade below lands on. */
+            fx_pre_loop_target = true;
             fx_env_ = fx_env_target_ = 1.f;
             final_lim_ = 0.f;
 
@@ -477,7 +480,12 @@ namespace daisy
 
             if(fx_env_ < .01f)
             {
-                fx_pre_loop = !fx_pre_loop;
+                /* PORT PATCH P15: land on the requested routing. Upstream
+                 * flipped fx_pre_loop here; two quick toggles (or a knob swept
+                 * across the enum faster than the fade) then ended on the side
+                 * the user had already left, and the parameter read back the
+                 * wrong value for the rest of the session. */
+                fx_pre_loop = fx_pre_loop_target;
                 fx_env_target_ = 1.f;
             }
 
@@ -750,6 +758,61 @@ namespace daisy
                 SetSustainActive(cubbi_sustain);
                 SetGain(cubbi_gain);
                 SetPan(cubbi_pan);
+            }
+            else /* JAMMI */
+            {
+                /* PORT PATCH P14: JAMMI gets a bind of its own.
+                 *
+                 * Upstream opened a JAMMI file only from SetVoiceSlot(), which
+                 * the hardware UI calls when its slot knob picks a tape. The
+                 * port's slot knob is a Samples-page selection and deliberately
+                 * does not rebind voices (see chompi_move.cpp), so JAMMI had no
+                 * way to reach its own samples at all: every key replayed
+                 * whatever file the voice last held -- usually the built-in RAM
+                 * tone that slot 15 plays -- and the Mode, Bank and Slot knobs
+                 * looked dead next to CUBBI's working ones.
+                 *
+                 * So bind here, the way the CUBBI branch binds the key's slot:
+                 * the whole keyboard plays the selected jammi sample, and the
+                 * note decides the speed (MidiNoteToPlaybackRatio below). The
+                 * bind happens once per selection change, not once per key
+                 * press, so a knob sweep cannot storm the file FIFO.
+                 *
+                 * Bank and mode changes fall out of the bound-mode/bank checks,
+                 * and an assignment (set_param "sample_file") marks every voice
+                 * with SetAllCopyOccurred(), so copy_occurred picks up the new
+                 * file on the next key press. */
+                const size_t sel      = voice_slot_;
+                const int    sel_bank = bank[int(voice_mode)];
+
+                if(sel == 15)
+                {
+                    /* Slot 15 is the recording buffer, not a file: upstream
+                     * skips the open for it and plays RAM. Tag the voice all the
+                     * same -- the bound slot is what tells the key path whether
+                     * the next press needs a bind, and a voice left on slot 1
+                     * while the selection moved to 15 (or back) would keep
+                     * playing the buffer it had. */
+                    chompi_voice[free_idx].SetUsingRam(true, true);
+                    chompi_voice[free_idx].SetSlot(15);
+                    chompi_voice[free_idx].SetBank((uint8_t)sel_bank);
+                    latest_voice = free_idx;
+                }
+                else if(file_exists[int(voice_mode)][sel_bank][sel - 1] &&
+                        (chompi_voice[free_idx].GetCubbiMode()
+                         || chompi_voice[free_idx].GetSlot() != (int)sel
+                         || chompi_voice[free_idx].GetBank() != sel_bank
+                         || copy_occurred))
+                {
+                    char name_buffer[256];
+                    char name_buffer_dbl[256];
+                    GetFileNameForSlot(sel, sel_bank, voice_mode, name_buffer);
+                    GetFileNameForSlot(sel, sel_bank, voice_mode, name_buffer_dbl, true);
+                    chompi_voice[free_idx].OpenFile(name_buffer, name_buffer_dbl, true);
+                    chompi_voice[free_idx].SetSlot(sel);
+                    chompi_voice[free_idx].SetUsingRam(false, true);
+                    latest_voice = free_idx;
+                }
             }
 
             playing_key[free_idx] = key;
@@ -1170,6 +1233,19 @@ namespace daisy
         inline void LooperPlayButton(bool rising) { looper.PlayButton(rising); }
 
         inline void ToggleLooperRecord() { looper.ToggleRecord(); }
+
+        /* PORT PATCH P16: clearing a recorded loop. On the hardware it is the
+         * record+play buttons held together, which CheckReset()/Reset() above
+         * decode from a button press; the chain host has no pair of buttons to
+         * hold, so the port exposes the same call as an action parameter
+         * ("loop_clear"). LooperEngine::Reset() drops an in-flight recording,
+         * stops the transport and empties the loop -- audibly a tape stop, as
+         * on the hardware: the last loop winds down over about a second. */
+        inline void ClearLooper()
+        {
+            looper.Reset();
+            looper_reset = true;
+        }
         inline void ToggleLooperPlaying() { looper.TogglePlaying(); }
         inline bool GetLooperReverse() { return looper.GetReverse(); }
 
@@ -1465,6 +1541,26 @@ namespace daisy
             }
         }
 
+        /* PORT PATCH P17: choose the slot without binding it.
+         *
+         * SetVoiceSlot() above does two jobs: it records which slot is selected
+         * and it opens that slot's file for every voice. The port needs them
+         * apart. Its slot knob is the Samples page's selection and (in JAMMI)
+         * the tape the keys play; driving SetVoiceSlot() from a knob sweep is
+         * what used to wedge a reader with a queue of half-finished opens.
+         *
+         * JAMMI's key path (P14) binds from voice_slot_ on the next key press
+         * anyway, so recording the choice here is all it takes -- one open, on
+         * the press that follows the turn of the knob, with the bank the knob
+         * was turned in. */
+        inline void SelectVoiceSlot(size_t idx)
+        {
+            voice_slot_ = idx;
+
+            if(voice_mode == VoiceMode::JAMMI)
+                voice_bank_ = bank[int(voice_mode)];
+        }
+
         inline VoiceMode GetVoiceMode () { return voice_mode; }
 
         inline void SetVoiceMode(VoiceMode m)
@@ -1487,6 +1583,11 @@ namespace daisy
         // otherwise, they are post looper
         void SetFxPreLooper(bool pre)
         {
+            /* PORT PATCH P15: remember the request as well as starting the
+             * fade; the fade itself only decides WHEN the routing changes, not
+             * which side it ends on. */
+            fx_pre_loop_target = pre;
+
             if(pre != fx_pre_loop)
             {
                 looper.FXEnvelope();
@@ -1557,6 +1658,18 @@ namespace daisy
                                     request_fifo.GetNumElements(),
                                     file_manager.request_fifo.GetNumElements(),
                                     file_manager.request_fifo.refused_pushes, flags);
+            /* PORT (not a patch): what the Setup-page knobs are driving --
+             * which mode/bank/slot the voices bind from, and whether the FX sit
+             * before or after the looper. Without this the only way to tell a
+             * dead knob from a dead bind is to listen. */
+            const int sn = snprintf(buf + off, len - (size_t)off,
+                                    "mode=%s bank=%d sel=%zu fx_pre=%d fx_target=%d loop_empty=%d\n",
+                                    voice_mode == VoiceMode::CUBBI ? "cubbi" : "jammi",
+                                    GetBank(), GetVoiceSlot(),
+                                    fx_pre_loop ? 1 : 0, fx_pre_loop_target ? 1 : 0,
+                                    looper.GetIsEmpty() ? 1 : 0);
+            if(sn > 0 && sn < (int)(len - (size_t)off))
+                off += sn;
             const int en = snprintf(buf + off, len - (size_t)off,
                                     "openfails=%d last='%s' errno=%d(%s)\n",
                                     chompi::g_open_fail_count, chompi::g_last_open_fail,
@@ -1649,6 +1762,7 @@ namespace daisy
         float res_, res_target_;
         
         bool fx_pre_loop;
+        bool fx_pre_loop_target;
         float fx_env_, fx_env_target_;
 
         int bank[int(VoiceMode::LAST)];

@@ -142,6 +142,7 @@ struct ChompiInstance
         char  input_source[8]  = "line";
         char  monitor_mode[8]  = "both";
         char  voice_mode[12]   = "jammi"; /* or "cubbi" */
+        char  fx_pre_loop[8]   = "pre";   /* or "post": FX before/after the looper */
         char  sample_dir[CHOMPI_PATH_LEN] = {0};
     } saved;
 
@@ -336,6 +337,16 @@ static void join_worker_if_idle()
  *  click-free — the same path CHOMPI's UI used. */
 static void apply_state_json(ChompiInstance* inst, const char* json);
 
+/* Momentary enums ("-"/"Clear", "-"/"Trig") are written by the shadow UI as
+ * the option NAME when it can read a current value back, and as the INDEX ("1")
+ * when it cannot -- which is what happens here, because get_param answers -1
+ * for an action that has no state. Accept both; only the idle option is a
+ * no-op. */
+static bool momentary_act(const char* val)
+{
+    return val && val[0] != '\0' && strcmp(val, "-") != 0 && strcmp(val, "0") != 0;
+}
+
 static void apply_param(ChompiInstance* inst, const char* key, const char* val)
 {
     if(!inst || !key || !val)
@@ -447,13 +458,20 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
          * wedged the voice for good -- a burst of re-opens ends with the
          * readers bound to a file that never finished opening, and the module
          * stays silent until it is recreated. Keys pick their own slot through
-         * KeyToSlot(); an assignment changes the file that slot will play. */
+         * KeyToSlot(); an assignment changes the file that slot will play.
+         *
+         * JAMMI is the exception that needs the slot to travel: it plays ONE
+         * sample across the keyboard, so the knob is how you pick which one.
+         * SelectVoiceSlot() records the choice without opening anything --
+         * JAMMI's key path opens it on the next key press, once per change
+         * instead of once per knob step (PORT PATCH P14/P17). */
         int slot = (int)f;
         if(slot < 1)
             slot = 1;
         if(slot > 15)
             slot = 15;
         inst->selected_slot = slot;
+        e.SelectVoiceSlot((size_t)slot);
     }
     else if(strcmp(key, "record") == 0)
     {
@@ -481,6 +499,30 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         e.SetLooperScrub(f);
     else if(strcmp(key, "looper_dub_gain") == 0)
         e.IncrementLooperDubGain(f);
+    else if(strcmp(key, "loop_clear") == 0)
+    {
+        /* Momentary, like sample_clear: the host writes the enum when the
+         * choice is committed, and we act on the non-idle value. Clears exactly
+         * what the hardware's record+play gesture clears -- an in-flight
+         * recording included. */
+        if(momentary_act(val))
+            e.ClearLooper();
+    }
+    else if(strcmp(key, "fx_pre_loop") == 0)
+    {
+        /* The hardware's FX pre/post-loop setting: does the looper take the
+         * FX'd signal (pre) or does the FX run on the loop playback (post)?
+         * The engine crossfades the change, so the audible routing follows one
+         * fade later -- SetFxPreLooper() remembers the request, so flipping
+         * twice in a row still ends on the side the user picked. */
+        const bool pre = (strcmp(val, "post") != 0);
+        if((strcmp(inst->saved.fx_pre_loop, "pre") == 0) != pre)
+        {
+            snprintf(inst->saved.fx_pre_loop, sizeof(inst->saved.fx_pre_loop), "%s",
+                     pre ? "pre" : "post");
+            e.SetFxPreLooper(pre);
+        }
+    }
     else if(strcmp(key, "sample_file") == 0)
     {
         /* The shadow UI's file browser hands us an absolute path. The map is
@@ -518,7 +560,7 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     }
     else if(strcmp(key, "sample_clear") == 0)
     {
-        if(!b)
+        if(!momentary_act(val))
             return;
         const int mode = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
         chompi::ClearSlotOverride(mode, e.GetBank(), inst->selected_slot);
@@ -584,7 +626,7 @@ static void apply_state_json(ChompiInstance* inst, const char* json)
         "volume", "filter", "resonance", "saturate", "warble",
         "delay_time", "delay_feedback", "reverb", "final_comp", "input_gain",
         "input_monitor", "input_source", "monitor_mode", "octave", "bank",
-        "voice_mode",
+        "voice_mode", "fx_pre_loop",
     };
     char val[CHOMPI_PATH_LEN];
     for(size_t i = 0; i < sizeof(kKeys) / sizeof(kKeys[0]); i++)
@@ -637,7 +679,7 @@ static const char* kChainParams
       "{\"key\":\"voice_mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"jammi\",\"cubbi\"]},"
       "{\"key\":\"bank\",\"name\":\"Bank\",\"type\":\"int\",\"min\":0,\"max\":4},"
       "{\"key\":\"slot\",\"name\":\"Slot\",\"type\":\"int\",\"min\":0,\"max\":15},"
-      "{\"key\":\"octave\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-2,\"max\":2}]";
+      "{\"key\":\"octave\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-2,\"max\":2},{\"key\":\"loop_clear\",\"name\":\"Clear Loop\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},{\"key\":\"fx_pre_loop\",\"name\":\"FX Route\",\"type\":\"enum\",\"options\":[\"pre\",\"post\"]}]";
 
 static const char* kUiHierarchy
     = "{\"levels\":{\"root\":{\"label\":\"CHOMPI\",\"params\":["
@@ -650,13 +692,13 @@ static const char* kUiHierarchy
       "{\"key\":\"attack\"},{\"key\":\"decay\"},{\"key\":\"start\"},{\"key\":\"end\"},{\"key\":\"gain\"},{\"key\":\"pan\"}],"
       "\"knobs\":[\"reverse\",\"sustain\",\"attack\",\"decay\",\"start\",\"end\",\"gain\",\"pan\"]},"
       "\"looper\":{\"label\":\"Looper\",\"params\":[{\"key\":\"looper_record\"},{\"key\":\"looper_play\"},"
-      "{\"key\":\"looper_reverse\"},{\"key\":\"looper_pitch\"},{\"key\":\"looper_scrub\"},{\"key\":\"looper_dub_gain\"}],"
+      "{\"key\":\"looper_reverse\"},{\"key\":\"looper_pitch\"},{\"key\":\"looper_scrub\"},{\"key\":\"looper_dub_gain\"},{\"key\":\"loop_clear\"}],"
       "\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\"]},"
       "\"recorder\":{\"label\":\"Recorder\",\"params\":[{\"key\":\"record\"},{\"key\":\"input_monitor\"},"
       "{\"key\":\"input_gain\"},{\"key\":\"input_source\"}],"
       "\"knobs\":[\"record\",\"input_monitor\",\"input_gain\",\"input_source\"]},"
       "\"setup\":{\"label\":\"Setup\",\"params\":[{\"key\":\"voice_mode\"},{\"key\":\"bank\"},{\"key\":\"slot\"},"
-      "{\"key\":\"octave\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":0,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data\",\"start_path\":\"/data/UserData/UserLibrary/Samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
+      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":0,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data\",\"start_path\":\"/data/UserData/UserLibrary/Samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
 
 // ---------------------------------------------------------------- plugin API
 
@@ -725,7 +767,13 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
     inst->engine.FillDefaultSample((float)MOVE_SAMPLE_RATE);
     inst->engine.SetVoiceMode(daisy::VoiceMode::JAMMI);
     inst->engine.SetBank(0);
-    inst->engine.SetVoiceSlot(15, false);
+    /* Slot 1, not 15. Slot 15 is the recording buffer, whose contents are the
+     * decaying test tone FillDefaultSample() writes -- with 15 selected, a
+     * fresh module could only ever play that one sound, in every mode and bank,
+     * until the user found the Samples page. Slot 1 is the first sound of the
+     * selected mode's bank, so the mode/bank/slot knobs do something audible
+     * from the start (see PORT PATCH P14 for JAMMI's bind). */
+    inst->engine.SetVoiceSlot(1, false);
     inst->engine.SetInputSource(daisy::InputSource::LINE_IN);
     inst->engine.SetGain(1.f);
 
@@ -922,11 +970,11 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
             "\"warble\":%.4f,\"delay_time\":%.4f,\"delay_feedback\":%.4f,\"reverb\":%.4f,"
             "\"final_comp\":%.4f,\"input_gain\":%.4f,\"input_monitor\":%d,"
             "\"input_source\":\"%s\",\"monitor_mode\":\"%s\",\"octave\":%d,\"bank\":%d,"
-            "\"voice_mode\":\"%s\"}",
+            "\"voice_mode\":\"%s\",\"fx_pre_loop\":\"%s\"}",
             v.volume, v.filter, v.resonance, v.saturate, v.warble,
             v.delay_time, v.delay_feedback, v.reverb, v.final_comp, v.input_gain,
             v.input_monitor, v.input_source, v.monitor_mode, v.octave, v.bank,
-            v.voice_mode);
+            v.voice_mode, v.fx_pre_loop);
         return (n > 0 && n < buf_len) ? n : -1;
     }
     if(strcmp(key, "split_voices") == 0)
@@ -976,6 +1024,10 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     if(strcmp(key, "voice_mode") == 0)
         return snprintf(buf, buf_len, "%s",
                         inst->engine.GetVoiceMode() == daisy::VoiceMode::CUBBI ? "cubbi" : "jammi");
+    if(strcmp(key, "fx_pre_loop") == 0)
+        /* What the user asked for. The engine's effective routing is in
+         * debug_voice's summary line while a crossfade is in flight. */
+        return snprintf(buf, buf_len, "%s", inst->saved.fx_pre_loop);
     if(strcmp(key, "looper_empty") == 0)
         return snprintf(buf, buf_len, "%d", inst->engine.GetLooperIsEmpty() ? 1 : 0);
     if(strcmp(key, "recording") == 0)

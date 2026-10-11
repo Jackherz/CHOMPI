@@ -176,6 +176,13 @@ int main(int argc, char** argv)
         api->set_param(inst, "voice_mode", "cubbi");
         api->set_param(inst, "bank", "0");
     }
+    else
+    {
+        /* The ram scenario is about CHOMPI's built-in RAM buffer, which is
+         * slot 15 (the module now starts on slot 1, i.e. a real sample of the
+         * selected bank -- see the note in chompi_move.cpp). */
+        api->set_param(inst, "slot", "15");
+    }
 
     Wav wav;
     wav_open(&wav, out_path);

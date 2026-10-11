@@ -126,9 +126,11 @@ module: $(AARCH64_OUT) module/module.json
 	@echo "staged $(MODULE_STAGE):"
 	@ls -la $(MODULE_STAGE) $(MODULE_STAGE)/samples
 
-# The full CHOMPI sample set (MIT, in this repo) — the two files in samples/
-# are enough to test, this is what you actually want to play with. Copies the
-# tape-2.0 card's CUBBI + JAMMI wavs (~150 MB) into samples/.
+# The full CHOMPI sample set (MIT, in this repo). The three files in samples/
+# are enough to load the module but leave most slots empty -- this is what you
+# actually want to play with. Copies the tape-2.0 card's CUBBI + JAMMI wavs
+# (~161 MB) into samples/ for local runs; `make deploy-full` pushes them to the
+# device directly, without staging them in the repo.
 SAMPLES_SRC ?= ../firmware/card-profiles/tape-2.0
 samples-full:
 	@test -d $(SAMPLES_SRC) || { echo "not found: $(SAMPLES_SRC) — run from the repo checkout, or set SAMPLES_SRC="; exit 1; }
@@ -151,7 +153,25 @@ deploy: module
 	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):$(REMOTE_DIR)/
 	$(SCP) build/module/samples/*.wav $(REMOTE):$(REMOTE_DIR)/samples/
 	@echo "deployed to $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)"
+	@n=$$(ls samples/*.wav | wc -l | tr -d ' '); \
+	 if [ "$$n" -lt 20 ]; then \
+	   echo "note: $$n sample(s) shipped -- the rest of the card set is not on the device."; \
+	   echo "      run 'make deploy-full' once to push all 168 tape-2.0 wavs (~161 MB),"; \
+	   echo "      or 'make samples-full' to stage them locally for tests."; \
+	 fi
 	@echo "reload the chain (or reboot) to pick it up; watch: make logs"
+
+# The full card set is 161 MB: a one-time push straight to the device, so the
+# repo checkout never carries it and `make deploy` (the loop you run all day)
+# stays small.
+deploy-full: module
+	$(SSH) $(REMOTE) "mkdir -p $(REMOTE_DIR)/samples"
+	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):$(REMOTE_DIR)/
+	$(SCP) build/module/samples/*.wav $(REMOTE):$(REMOTE_DIR)/samples/
+	@echo "pushing the full card set from $(SAMPLES_SRC) (~161 MB, one time) ..."
+	$(SCP) $(SAMPLES_SRC)/cubbi_*.wav $(SAMPLES_SRC)/jammi_*.wav $(REMOTE):$(REMOTE_DIR)/samples/
+	@echo "deployed with the full card set: $$($(SSH) $(REMOTE) 'ls $(REMOTE_DIR)/samples/*.wav | wc -l' | tr -d ' ') wavs on $(MOVE)"
+	@echo "reload the chain (or reboot) to pick it up"
 
 # Cross-compiled ABI probes, dropped in /tmp on the Move so they can be run
 # against the installed module without any UI involvement:

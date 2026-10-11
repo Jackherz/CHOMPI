@@ -90,13 +90,18 @@ samples directory is the default because `create_instance()` seeds
 `sample_dir` to `<module dir>/samples`; `set_param("sample_dir", …)` moves it
 at runtime (and triggers a rescan).
 
-**Samples are not bundled beyond the two CUBBI files** in `samples/` —
-`make samples-full` copies the whole set in from `firmware/card-profiles/`. The full
-set lives in this repo at `firmware/card-profiles/tape-2.0/` (`cubbi_*.wav`,
-`jammi_*.wav`) — MIT-licensed, so copying them into
-`.../chompi/samples/` is fine. The engine scans for slots 1–14 across banks
-a–e (mode × bank × slot, `UpdateFileExists()`), so extra banks need extra
-files or the slot reads as empty.
+**Run `make deploy-full` once before you judge the Samples page.** Three
+files ship in `samples/` — the first CUBBI and JAMMI samples of bank a — which
+is enough to hear the module, and leaves slots 3–14 (and banks b/c) silent.
+That is exactly what "none of the cubbi samples load" looks like from the UI.
+The full card set is in this repo at `firmware/card-profiles/tape-2.0/` (168
+WAVs, ~161 MB, MIT-licensed), and `make deploy-full` pushes it to the device in
+one `scp` on top of a normal deploy; later `make deploy` runs only re-send
+`samples/`, so the full set stays put. `make deploy` prints a reminder when the
+device would still be on the bundled few, and `make samples-full` stages the set
+locally instead (for the probes). The engine scans slots 1–14 across banks a–e
+(`UpdateFileExists()`), so a bank with no files on the device reads as empty —
+`debug_files` shows exactly which slots exist.
 
 ## Mapping CHOMPI's hardware to the Move
 
@@ -104,11 +109,13 @@ files or the slot reads as empty.
 | --- | --- |
 | 15 keys (C3–C5) | MIDI notes; two octaves fold onto the 15 keys |
 | velocity-sensitive key press | note-on velocity → key request |
-| 8 knobs | `chain_params` — 33 entries, paged by the shadow UI |
+| 8 knobs | `chain_params` — 35 entries, paged by the shadow UI |
 | pitch/speed fader | `varspeed`, `looper_pitch`, `looper_scrub` |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
 | rec / play buttons | `looper_record`, `looper_play`, `record` |
+| clear the loop (rec+play held) | `loop_clear` — the Looper page's `Clear Loop`, a momentary cell |
+| FX before or after the looper | `fx_pre_loop` — the Setup page's `FX Route`: `pre` / `post` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |
 | SD-card slot files | `samples/cubbi_aN.wav` / `jammi_aN.wav` on the Move's FS |
 | load a sample onto a key | the **Samples** level: pick `slot`, then `sample_file` opens the host's browser at `/data/UserData/UserLibrary/Samples` |
@@ -121,7 +128,7 @@ root / tape / looper / recorder / setup / **samples**) and the knob list from
 the ids in `chain_params` are the same ids `state` writes, so a saved chain
 reloads with the same knobs, mode, bank and octave.
 
-Beyond the 33 knob entries the plugin also serves a few keys that are *not*
+Beyond the 35 knob entries the plugin also serves a few keys that are *not*
 in `chain_params`, so they never appear in the UI but stay readable/writable
 by a chain or by hand: `monitor_mode` (`both` / `hp` / `sendret`),
 `record` (off/on — the CHOMPI capture button, as opposed to the looper's
@@ -167,6 +174,39 @@ Two things worth knowing:
 * **No MIDI notes are declared.** Notes arrive where they arrive; the key map
   (`note_to_button`) is CHOMPI's own.
 
+### Mode, bank and slot
+
+The **Setup** page carries the three knobs the hardware has:
+
+| knob | what it does |
+| --- | --- |
+| `voice_mode` | **JAMMI** — one sample for the whole keyboard, played at the note's speed: the original tape behaviour. **CUBBI** — each key plays the sample of its own slot. |
+| `bank` | which set of samples that mode plays: 0–4, i.e. a–e on the card. The card set fills a, b and c. |
+| `slot` | which slot 1–14 is selected (15 is the recording buffer). In CUBBI it is what the Samples page edits — the keys still address their own slots. In JAMMI it is the sample the keys play. |
+
+**Selecting a slot never cuts off what is playing.** The new sample is bound on
+the next key press: one file open per change, instead of a burst of opens while
+a knob is being swept, which is what used to wedge a reader and leave the module
+silent until it was reloaded (VENDORED P14/P17). In JAMMI, move `slot` or `bank`
+and press any key to hear the sample you picked; in CUBBI, `slot` only changes
+what the Samples page is editing, because there the key chooses the slot.
+
+Slot 15 is CHOMPI's built-in RAM buffer — out of the box that is a decaying test
+tone, which is what a fresh module used to play regardless of the knobs. To hear
+the card, start on slot 1.
+
+### Clearing the loop, and where the FX sit
+
+| | |
+| --- | --- |
+| `loop_clear` (Looper page) | empties the loop exactly as holding rec+play does on the hardware. It is a **tape stop**: the remains of the loop wind down over about a second, and then it is silent. |
+| `fx_pre_loop` (`FX Route` on the Setup page) | `pre` — the looper records the FX'd signal, so a delay's tail is printed into the loop. `post` — the looper records the dry signal and the FX colours its playback. The switch is crossfaded, and the fade lands on the value you chose even if you flip it twice quickly (VENDORED P15). |
+
+Both were missing from the port until this batch; `tools/looper_probe` measures
+them with audio rather than trusting the parameter list (record a burst through
+a long delay, listen to the loop with the FX off: `pre` keeps the tail, `post`
+does not).
+
 ## Instance lifecycle
 
 The module owns one worker thread that does all file I/O (scans, map writes,
@@ -209,24 +249,35 @@ make host && make tools
 ./build/key_probe                                     # presses a key, polls slot files, reports peak
 ./build/render_test build/chompi_move.so out.wav cubbi samples 4
 
-# tools/sample_map_probe: assign a WAV, reload the plugin, check what plays
-# tools/slot_knob_probe:  the slot knob, fast playing, and a vanished file
-#                         must none of them wedge the voices (see VENDORED P12/P13)
-# tools/unload_probe:     load / play / destroy / dlclose -- the host's own
-#                         removal sequence, which must not crash the host
-for p in sample_map_probe slot_knob_probe unload_probe; do
+# The behavioural probes. Each builds in a second and prints its own verdict.
+#   sample_map_probe  assign a WAV, reload the plugin, check what plays
+#   slot_knob_probe   the slot knob, fast playing, and a vanished file must
+#                     none of them wedge the voices (see VENDORED P12/P13)
+#   unload_probe      load / play / destroy / dlclose -- the host's own removal
+#                     sequence, which must not crash the host
+#   mode_bank_probe   which sample each mode/bank/slot plays, measured as a
+#                     frequency because every probe sample is a tone
+#   looper_probe      record, play and clear a loop; and where the FX sit
+for p in sample_map_probe slot_knob_probe unload_probe mode_bank_probe looper_probe; do
     g++ -std=c++17 -O1 -D_Static_assert=static_assert \
         -I module/dsp/third_party/schwung -o /tmp/$p tools/$p.cpp -ldl
 done
-/tmp/slot_knob_probe build/chompi_move.so .
-/tmp/unload_probe    build/chompi_move.so .
+python3 tools/make_probe_samples.py /tmp/fullmod/samples  # tone-labelled set
+/tmp/sample_map_probe
+/tmp/slot_knob_probe  build/chompi_move.so .
+/tmp/unload_probe     build/chompi_move.so .
+/tmp/mode_bank_probe  build/chompi_move.so /tmp/fullmod
+/tmp/looper_probe     build/chompi_move.so /tmp/fullmod
 ```
 
 `render_test` dlopens the plugin, feeds it the same `host_api_v1_t` the chain
 host does, plays a note per block group and writes a WAV. Three scenarios:
-`ram` (JAMMI/ram playback), `cubbi` (streams `samples/cubbi_a1.wav` off disk),
-`record` (line-in capture into the looper). Expected peaks ≈ 1559 / 3436 /
-3035 — silence means a regression, and `make render` is the smoke test.
+`ram` (CHOMPI's built-in RAM buffer — it pins `slot` 15, which is where that
+lives), `cubbi` (streams `samples/cubbi_a1.wav` off disk), `record` (line-in
+capture into the looper). Peaks at this revision ≈ 1748 / 3176 / 3206; the
+figures move a little with the FX defaults and the sample set, so treat them as
+"not silent, in the same range" rather than exact. Silence means a regression,
+and `make render` is the smoke test.
 
 ## Status
 
@@ -238,14 +289,15 @@ host does, plays a note per block group and writes a WAV. Three scenarios:
 | Keys over a running loop, looper record/playback | ✅ confirmed — briefly filed as a defect, then falsified (the keys do sound over the loop) |
 | Fast playing under load, audio in | not yet tested |
 | Sample import (browser, assignment, waveform trim) | offline-verified (`tools/sample_map_probe`), not yet on device |
+| Mode / bank / slot, loop clear, FX routing | offline-verified (`tools/mode_bank_probe`, `tools/looper_probe`), not yet on device |
 
 The device check that passed: the aarch64 build dlopens on the Move, serves
-`chain_params` (2127 B, 31 entries then — 33 since sample import landed),
-`ui_hierarchy` (1352 B, 5 levels then — 6), `pad_layout` chromatic and `state`
-(16 keys), finds the slot files on the Move's
-filesystem (`cubbi/0:110000000000001-`) and streams a CUBBI sample off disk
-into the render block — `peak=4729` over 2 s, i.e. the sample played, and the
-state round-trip came back byte-identical.
+`chain_params` (2127 B / 31 entries when that check ran — 2796 B / 35 entries
+today), `ui_hierarchy` (1352 B then, 6 levels — 1864 B today, plus
+`pad_layout`), `state` (16 keys then, 17 today), finds the slot files on the
+Move's filesystem (`cubbi/0:110000000000001-`) and streams a CUBBI sample off
+disk into the render block — `peak=4729` over 2 s, i.e. the sample played, and
+the state round-trip came back byte-identical.
 
 ## Device unknowns (still untested on hardware)
 
@@ -259,9 +311,10 @@ state round-trip came back byte-identical.
 2. **Input monitoring latency** — CHOMPI monitors the input through the same
    DSP, so live monitoring is one block behind; fine for a looper, worth
    a listen for a live-tape feel.
-3. **Sample set** — only two CUBBI files ship here. The full set is in
-   `firmware/card-profiles/tape-2.0/`; copy it into the module's `samples/`,
-   or the slot scan reports empty slots (visible via `debug_files`).
+3. **Sample set** — three files ship here, so most slots read as empty until
+   `make deploy-full` pushes the card set (~161 MB, one time). The scan reports
+   empty slots honestly (`debug_files`), which is the state to expect before
+   that push; the Samples page itself is fine.
 
 ## Licence
 
