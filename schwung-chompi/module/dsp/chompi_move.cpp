@@ -41,6 +41,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <mutex>
 
 #include "host/plugin_api_v1.h"
 
@@ -105,6 +106,14 @@ struct ChompiInstance
     std::atomic<bool> worker_started{false};
     std::atomic<bool> stopping{false};
 
+    /* True while the worker is inside this instance. destroy() waits for it to
+     * fall instead of sleeping and hoping: the worker dereferences the engine
+     * and the sample map, and everything below it is freed before destroy
+     * returns. A 2 ms sleep was a guess about how long a file operation takes,
+     * and on a device with a slow card the guess is wrong -- the worker then
+     * touched freed memory, and the host crashed on the next removal. */
+    std::atomic<bool> worker_busy{false};
+
     /* Flags raised by set_param (callback) and drained by the worker. */
     std::atomic<bool> want_scan_files{false};
 
@@ -158,6 +167,16 @@ static std::atomic<int>  g_instance_count{0};
  * back. It used to be a never-reset one-shot latch, so the first destroy
  * silenced every instance created afterwards. */
 static std::atomic<bool> g_worker_active{false};
+/* The worker lives in THIS library, and the chain host's retire step is
+ * destroy_instance followed immediately by dlclose (chain_synth_load.c). So
+ * destroy must not return while the thread is still running: it is joined
+ * there. The handle is only written by start_worker_if_needed() and only
+ * joined by the destroy that takes the last instance away, both under
+ * g_worker_lock -- create and destroy run on the host's management threads,
+ * never on the audio callback. */
+static pthread_t         g_worker_thread;
+static bool              g_worker_joinable = false;
+static std::mutex        g_worker_lock;
 static const host_api_v1_t* g_host_api = nullptr;
 
 static void set_err(ChompiInstance* inst, const char* msg)
@@ -225,6 +244,10 @@ static void* chompi_io_worker(void* arg)
             if(inst->stopping.load(std::memory_order_acquire))
                 continue;
 
+            /* From here to the store below, this instance is ours: destroy
+             * spins on the flag before it frees anything. */
+            inst->worker_busy.store(true, std::memory_order_release);
+
             /* CHOMPI's SDCallback: copier.CopyProcess() -> engine.ProcessFileRequests() */
             inst->engine.ProcessFileRequests();
 
@@ -241,6 +264,8 @@ static void* chompi_io_worker(void* arg)
                 snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
                 chompi::WriteSlotOverrideMap(map_path);
             }
+
+            inst->worker_busy.store(false, std::memory_order_release);
         }
         if(!any_alive && g_instance_count.load(std::memory_order_acquire) == 0)
         {
@@ -266,14 +291,42 @@ static void start_worker_if_needed()
     if(g_worker_active.exchange(true))
         return; /* already running */
 
-    pthread_t t;
+    std::lock_guard<std::mutex> guard(g_worker_lock);
+    pthread_t                   t;
     if(pthread_create(&t, nullptr, chompi_io_worker, nullptr) == 0)
     {
-        pthread_detach(t);
+        /* Kept joinable on purpose: destroy() reaps it, and a detached thread
+         * cannot be waited for at all. */
+        g_worker_thread   = t;
+        g_worker_joinable = true;
         return;
     }
     /* The thread never started, so the flag must not claim it did. */
     g_worker_active.store(false, std::memory_order_release);
+}
+
+/** Wait for the worker to finish, when it is this call's job to take it away.
+ *
+ *  Only ever called with no instances left: the worker retires by itself at
+ *  that point, so this is a wait for one pass of its loop (500 us plus at most
+ *  one file operation) rather than a hang. It is the difference between a
+ *  plugin that can be removed from a chain and one that takes the host with
+ *  it. */
+static void join_worker_if_idle()
+{
+    std::lock_guard<std::mutex> guard(g_worker_lock);
+
+    /* Re-checked under the lock: a create that published an instance while we
+     * were freeing this one has already handed the thread new work. (The host
+     * serialises load and retire, so this is belt and braces -- but joining a
+     * live worker would hang the loader instead of leaking a stack.) */
+    if(g_instance_count.load(std::memory_order_acquire) != 0)
+        return;  /* still serving another instance */
+    if(!g_worker_joinable)
+        return;
+
+    g_worker_joinable = false;
+    pthread_join(g_worker_thread, nullptr);
 }
 
 // ---------------------------------------------------------------- params
@@ -719,36 +772,44 @@ static void v2_destroy_instance(void* instance)
     if(!inst)
         return;
 
-    /* A settle window may still be open (assign, then unload within 500 ms);
-     * destroy is the last chance to keep that assignment. This thread is not
-     * the render callback, so the write is allowed. */
-    if(inst->map_dirty.load(std::memory_order_acquire))
-    {
-        inst->map_dirty.store(false, std::memory_order_release);
-        char map_path[CHOMPI_PATH_LEN];
-        snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
-        chompi::WriteSlotOverrideMap(map_path);
-    }
-
-    inst->stopping.store(true, std::memory_order_release);
-    /* Let the worker notice before the memory goes away (it re-checks the
-     * stopping flag every 500 us). */
-    usleep(2000);
-
-    /* Remove it AND shrink the count. The count used to only ever grow, so a
-     * few synth swaps walked g_instances[] off the end of the array; and with
-     * the slot nulled but the count unchanged, the worker read an empty roster
-     * and retired. Compact by moving the last live slot down: the worker only
-     * dereferences slots it saw non-null, and every slot it can still see is
-     * live. */
-    const int count = g_instance_count.load(std::memory_order_acquire);
+    /* Find it in the roster FIRST. An instance that is not ours -- a double
+     * removal, or a pointer this module never handed out -- must not be freed
+     * on the strength of the argument alone. */
+    const int count   = g_instance_count.load(std::memory_order_acquire);
     int       removed = -1;
     for(int i = 0; i < count && removed < 0; i++)
     {
         if(g_instances[i] == inst)
             removed = i;
     }
-    if(removed >= 0)
+    if(removed < 0)
+        return; /* not ours: never free a pointer on the strength of the argument alone */
+
+    /* Stop the worker, then WAIT for it to leave this instance rather than
+     * sleeping and hoping: it dereferences the engine and the sample map, and
+     * everything below frees them. See worker_busy for the bug this replaced
+     * (a device with a slow card removing the plugin -> host SIGSEGV). */
+    inst->stopping.store(true, std::memory_order_release);
+    while(inst->worker_busy.load(std::memory_order_acquire))
+        usleep(100);
+
+    /* A settle window may still be open (assign, then unload within 500 ms);
+     * destroy is the last chance to keep that assignment, and with the worker
+     * out of the way this is the only writer. This thread is not the render
+     * callback, so the write is allowed. */
+    if(inst->map_dirty.exchange(false))
+    {
+        char map_path[CHOMPI_PATH_LEN];
+        snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
+        chompi::WriteSlotOverrideMap(map_path);
+    }
+
+    /* Unregister and shrink the count. The count used to only ever grow, so a
+     * few synth swaps walked g_instances[] off the end of the array; and with
+     * the slot nulled but the count unchanged, the worker read an empty roster
+     * and retired. Compact by moving the last live slot down: the worker only
+     * dereferences slots it saw non-null, and every slot it can still see is
+     * live. */
     {
         const int last = count - 1;
         g_instances[removed] = (removed == last) ? nullptr : g_instances[last];
@@ -760,6 +821,13 @@ static void v2_destroy_instance(void* instance)
     free(inst->chompi_mem);
     free(inst->delay_mem);
     delete inst;
+
+    /* LAST, and the reason this function exists in the shape it does: the host
+     * dlcloses this library as soon as we return, so no thread of ours may
+     * still be inside it. The worker retires on its own once the last instance
+     * is gone; reaping it here is what makes removing the plugin from a chain
+     * safe. */
+    join_worker_if_idle();
 }
 
 static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)

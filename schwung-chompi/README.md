@@ -169,17 +169,36 @@ Two things worth knowing:
 
 ## Instance lifecycle
 
-The module owns a single worker thread that does all file I/O (scans, map
-writes, sample loads) while the audio callback stays allocation- and I/O-free.
-It retires when the last instance is destroyed — the chain host `dlclose`s the
-library on a synth swap, so nothing may outlive it — and a later
-`create_instance` starts a fresh one. The instance registry is compacted on
-destroy, which also means a plugin that is loaded and unloaded repeatedly does
-not exhaust it. Both of these were one bug: the worker started from a
-never-reset one-shot latch and the registry count only ever grew, so the first
-destroy left every instance created afterwards silent. `tools/sample_map_probe`
-covers it — phase "after reload" renders the assigned sample across a
-`destroy_instance` + `create_instance` cycle and is silent without the fix.
+The module owns one worker thread that does all file I/O (scans, map writes,
+sample opens and reads) while the audio callback stays allocation-, lock- and
+I/O-free. Its lifetime is the risky part, because the chain host's unload path
+is `destroy_instance()` followed **immediately** by `dlclose()` — its own
+comment calls that step "destroy_instance + dlclose of the detached old synth.
+Slow for some modules (threads to join, child processes to reap)", i.e. the
+host hands the module the job of not leaving threads behind.
+
+So `destroy_instance`:
+
+* sets the instance's `stopping` flag, then **waits until the worker is out of
+  that instance** (`worker_busy`) before freeing anything. That wait used to be
+  a fixed 2 ms sleep — a guess about how long a file operation takes, and wrong
+  on a device with a slow card, where the worker stayed inside memory that had
+  just been freed;
+* flushes a pending sample-map write (now the only writer, since the worker is
+  out of the way);
+* unregisters the instance and shrinks the roster (which only ever grew
+  before, so repeated loads walked it off the end of the array);
+* and, when that was the **last** instance, **joins** the worker before
+  returning. The thread retires by itself once no instances are left, so this
+  is a short wait — one pass of its 500 µs loop plus at most one file
+  operation — and it is what makes removing the plugin from a chain safe: no
+  thread of ours is still running when the host unmaps the library.
+
+Both halves are covered by `tools/unload_probe`, which performs the host's own
+sequence (load, play, `destroy_instance`, `dlclose`) five times, plus a
+two-instance case where one is removed while the other keeps playing. It also
+records how the crash was reproduced: with a slow filesystem (a 50 ms file
+operation) the pre-fix build segfaults the host on the first removal.
 
 ## Verifying without a Move
 
@@ -193,9 +212,14 @@ make host && make tools
 # tools/sample_map_probe: assign a WAV, reload the plugin, check what plays
 # tools/slot_knob_probe:  the slot knob, fast playing, and a vanished file
 #                         must none of them wedge the voices (see VENDORED P12/P13)
-g++ -std=c++17 -O1 -D_Static_assert=static_assert \
-    -I module/dsp/third_party/schwung -o /tmp/probe tools/slot_knob_probe.cpp -ldl
-/tmp/probe build/chompi_move.so .
+# tools/unload_probe:     load / play / destroy / dlclose -- the host's own
+#                         removal sequence, which must not crash the host
+for p in sample_map_probe slot_knob_probe unload_probe; do
+    g++ -std=c++17 -O1 -D_Static_assert=static_assert \
+        -I module/dsp/third_party/schwung -o /tmp/$p tools/$p.cpp -ldl
+done
+/tmp/slot_knob_probe build/chompi_move.so .
+/tmp/unload_probe    build/chompi_move.so .
 ```
 
 `render_test` dlopens the plugin, feeds it the same `host_api_v1_t` the chain

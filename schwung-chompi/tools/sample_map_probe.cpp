@@ -151,6 +151,21 @@ static double phase(const char* label, double seconds)
     return share;
 }
 
+static void note_press(int note, double seconds)
+{
+    uint8_t on[3]  = {0x90, (uint8_t)note, 100};
+    uint8_t off[3] = {0x80, (uint8_t)note, 0};
+    api->on_midi(inst, on, 3, MOVE_MIDI_SOURCE_INTERNAL);
+    const int blocks = (int)(seconds * MOVE_SAMPLE_RATE / MOVE_FRAMES_PER_BLOCK);
+    int16_t   out[256];
+    for(int b = 0; b < blocks; b++)
+    {
+        api->render_block(inst, out, MOVE_FRAMES_PER_BLOCK);
+        usleep(2900);
+    }
+    api->on_midi(inst, off, 3, MOVE_MIDI_SOURCE_INTERNAL);
+}
+
 static void wait_for_scan(int ms)
 {
     for(int i = 0; i < ms / 20; i++)
@@ -297,9 +312,12 @@ int main(int argc, char** argv)
     wait_for_scan(300);
     api->set_param(inst, "sample_file", "/tmp/chompi_missing_probe.wav");
     wait_for_scan(1200);
-    api->set_param(inst, "slot", "6");        /* load a slot: opens the file */
-    wait_for_scan(600);
-    api->set_param(inst, "slot", "5");
+
+    /* Play the two slots: the open happens on the key path (SetVoiceSlot), not
+     * on the selection knob. 55 -> slot 5 (assigned, file gone) and 57 -> slot
+     * 6 (no assignment, no file on this card). */
+    note_press(55, 0.25);
+    note_press(57, 0.25);
     wait_for_scan(600);
     struct stat st;
     const bool user_stub = (stat("/tmp/chompi_missing_probe.wav", &st) == 0);

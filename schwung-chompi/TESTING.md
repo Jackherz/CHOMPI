@@ -261,6 +261,7 @@ measures which file actually played. Expect `PASS`, with the assigned tone at
 | Assignment gone after a power cycle | `<module dir>/samples/samples.map` — check it exists and the module dir is writable |
 | Clicks under load, fine otherwise | filesystem streaming — report the `debug_files` reading and the timing |
 | Chain host crashes on load | send `debug.log` — likely an ABI mismatch, so include the Schwung version |
+| **The Move crashes or reboots when you remove the plugin from the chain** | a thread of ours outliving `dlclose` — `destroy_instance` joins the worker for exactly this (README "Instance lifecycle"); reproduce without a device with `tools/unload_probe` |
 
 Useful one-liners:
 
