@@ -116,6 +116,11 @@ struct ChompiInstance
 
     /* Flags raised by set_param (callback) and drained by the worker. */
     std::atomic<bool> want_scan_files{false};
+    /* When the slot-value store last changed and when it was last written, so
+     * a knob sweep leaves one file behind instead of one per detent. */
+    unsigned values_written = 0;
+    unsigned values_saved   = 0;
+    uint64_t values_dirty_ms = 0;
 
     /* The slot a samples-page edit applies to (set_param "slot"), and the
      * dirty flag that asks the worker to persist the sample map. */
@@ -133,16 +138,22 @@ struct ChompiInstance
      * exposes setters (and only some getters), so the slot autosave is answered
      * from here rather than by reaching into the DSP. Only touched from the
      * callback entry points. */
+    /* The instrument's non-per-slot state. The Tape page's knobs are NOT
+     * here: they are per (mode, bank, slot) and live in the engine's cache and
+     * the port's slot-value store (PORT PATCH P19), so the page can read back
+     * whichever slot is selected without a second copy to keep in sync. */
     struct Saved
     {
         float volume = 1.f, filter = 1.f, resonance = 0.f, saturate = 0.f;
         float warble = 0.f, delay_time = 0.f, delay_feedback = 0.f;
         float reverb = 0.f, final_comp = 0.f, input_gain = 1.f;
+        float looper_pitch = 1.f, looper_scrub = 0.f, looper_dub_gain = 0.f;
         int   input_monitor = 0, octave = 0, bank = 0;
         char  input_source[8]  = "line";
         char  monitor_mode[8]  = "both";
         char  voice_mode[12]   = "jammi"; /* or "cubbi" */
         char  fx_pre_loop[8]   = "pre";   /* or "post": FX before/after the looper */
+        char  looper_reverse[4] = "Off";
         char  sample_dir[CHOMPI_PATH_LEN] = {0};
     } saved;
 
@@ -266,6 +277,23 @@ static void* chompi_io_worker(void* arg)
                 chompi::WriteSlotOverrideMap(map_path);
             }
 
+            /* Same idea for the per-slot values: a knob turn marks the store,
+             * and one write lands once the knob has stopped moving. */
+            const unsigned vw = chompi::SlotValuesWriteCount();
+            if(vw != inst->values_written)
+            {
+                inst->values_written  = vw;
+                inst->values_dirty_ms = now_ms();
+            }
+            else if(vw != inst->values_saved &&
+                    now_ms() - inst->values_dirty_ms >= CHOMPI_MAP_SETTLE_MS)
+            {
+                char values_path[CHOMPI_PATH_LEN];
+                snprintf(values_path, sizeof(values_path), "%s/slots.values", chompi::g_sample_dir);
+                if(chompi::WriteSlotValues(values_path))
+                    inst->values_saved = vw;
+            }
+
             inst->worker_busy.store(false, std::memory_order_release);
         }
         if(!any_alive && g_instance_count.load(std::memory_order_acquire) == 0)
@@ -347,6 +375,29 @@ static bool momentary_act(const char* val)
     return val && val[0] != '\0' && strcmp(val, "-") != 0 && strcmp(val, "0") != 0;
 }
 
+/* An On/Off enum write, in either form the host can send.
+ *
+ * The shadow UI reads the current value with get_param and then:
+ *   - if that answer IS one of the param's options, it writes the option's
+ *     NAME back ("On" / "Off": this is what our On/Off enums answer, so this
+ *     is the form the device sends);
+ *   - otherwise it writes the option's INDEX ("0" / "1").
+ *
+ * A numeric-only parse (strtof) reads the name form as 0, which made every one
+ * of these switches one-way: writing "On" turned them OFF. That is why the
+ * Loop switch "changed nothing" -- and the same bug held Sustain, Reverse,
+ * Record and Loop Reverse. Accept both forms. */
+static bool param_on(const char* val)
+{
+    if(val == nullptr || val[0] == '\0')
+        return false;
+    if(strcmp(val, "-") == 0 || strcmp(val, "0") == 0)
+        return false;
+    if(strcasecmp(val, "off") == 0 || strcasecmp(val, "false") == 0)
+        return false;
+    return true;
+}
+
 static void apply_param(ChompiInstance* inst, const char* key, const char* val)
 {
     if(!inst || !key || !val)
@@ -364,6 +415,7 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
 
     const float f = strtof(val, nullptr);
     const int   b = (int)(f != 0.f) && (strcmp(val, "0") != 0);
+    const bool  on = param_on(val); /* On/Off enums: the host sends the name */
 
     if(strcmp(key, "volume") == 0)
         inst->saved.volume = f, e.SetMainGain(f);
@@ -383,28 +435,46 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         inst->saved.reverb = f, e.SetReverb(f);
     else if(strcmp(key, "final_comp") == 0)
         e.SetFinalComp(f);
+    /* Tape page. Every one of these edits the SELECTED slot's values (the
+     * engine's cache AND the slot-value store), then applies them live: the
+     * next key press re-applies them from the store, whichever pad it is
+     * (PORT PATCH P19). A handler that only poked the live voices was undone by
+     * the next press, which is what made Attack look dead next to Decay. */
     else if(strcmp(key, "gain") == 0)
-        e.SetGain(f);
+        e.SetSlotGain(f);
     else if(strcmp(key, "pan") == 0)
-        e.SetPan(f);
+        e.SetSlotPan(f);
     else if(strcmp(key, "attack") == 0)
-        e.SetAttack(f);
+        e.SetSlotAttack(f);
     else if(strcmp(key, "decay") == 0)
-        e.SetDecay(f);
+        e.SetSlotDecay(f);
     else if(strcmp(key, "start") == 0)
-        e.SetStartPoint(f);
+        e.SetSlotStart(f);
     else if(strcmp(key, "end") == 0)
-        e.SetEndPoint(f);
+        e.SetSlotEnd(f);
     else if(strcmp(key, "varspeed") == 0)
-        e.SetGlobalPitchFree(f); /* 0..1 UI value, engine maps to a ratio */
+    {
+        /* 0..1 UI value. The engine maps it onto the firmware's 0.01x..2x
+         * pitch curve and keeps the reverse switch as the sign of the result,
+         * so the two controls compose instead of fighting. */
+        float v9[chompi::kSlotValueCount];
+        bool  loop = true, sustain = true;
+        e.CopySlotValues(v9, &loop, &sustain);
+        e.SetSlotPitchFromUi(f, v9[chompi::kSlotPitch] < 0.f);
+    }
     else if(strcmp(key, "reverse") == 0)
-        e.SetReverse(b);
+    {
+        float v9[chompi::kSlotValueCount];
+        bool  loop = true, sustain = true;
+        e.CopySlotValues(v9, &loop, &sustain);
+        e.SetSlotPitchFromUi(fabsf(v9[chompi::kSlotPitch]), on);
+    }
     else if(strcmp(key, "sustain") == 0)
-        e.SetSustainActive(b);
+        e.SetSlotSustain(on);
     else if(strcmp(key, "auto_loop") == 0)
-        e.SetAutoLoop(b);
+        e.SetSlotAutoLoop(on);
     else if(strcmp(key, "input_monitor") == 0)
-        inst->saved.input_monitor = b, e.SetInputMonitor(b);
+        inst->saved.input_monitor = on, e.SetInputMonitor(on);
     else if(strcmp(key, "input_gain") == 0)
         inst->saved.input_gain = f, e.SetInputGain(f);
     else if(strcmp(key, "monitor_mode") == 0)
@@ -440,12 +510,22 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         snprintf(inst->saved.voice_mode, sizeof(inst->saved.voice_mode), "%s",
                  cubbi ? "cubbi" : "jammi");
         e.SetVoiceMode(cubbi ? daisy::VoiceMode::CUBBI : daisy::VoiceMode::JAMMI);
+        /* The new mode's bind happens on the next key press (P14), and every
+         * voice must take it: without this a voice that was mid-gesture keeps
+         * the previous mode's file and the pads disagree with each other. */
+        e.SetAllCopyOccurred();
+        /* Each mode carries its own values per slot (the hardware's preset
+         * store is keyed by mode too), so the Tape page has to re-read. */
+        e.LoadSlotValues(e.SelectedSlot());
     }
     else if(strcmp(key, "bank") == 0)
     {
         const size_t bank = (size_t)(f < 0.f ? 0 : (f > 4.f ? 4 : (int)f));
         inst->saved.bank = (int)bank;
         e.SetBank(bank);
+        /* Every slot of the new bank carries its own values: this is what makes
+         * the bank knob do something you can see on the Tape page. */
+        e.LoadSlotValues(e.SelectedSlot());
     }
     else if(strcmp(key, "slot") == 0)
     {
@@ -472,15 +552,19 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
             slot = 15;
         inst->selected_slot = slot;
         e.SelectVoiceSlot((size_t)slot);
+        /* The Tape page shows the SELECTED slot's values, so every step of this
+         * knob re-reads them: on the hardware that is what the slot knob is
+         * for, and it is why bank/slot look dead when nothing re-reads. */
+        e.LoadSlotValues((size_t)slot);
     }
     else if(strcmp(key, "record") == 0)
     {
-        if(b && !inst->recording)
+        if(on && !inst->recording)
         {
             e.StartNewRecording(0);
             inst->recording = true;
         }
-        else if(!b && inst->recording)
+        else if(!on && inst->recording)
         {
             e.StopRecording();
             inst->recording = false;
@@ -492,7 +576,7 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     else if(strcmp(key, "looper_play") == 0)
         e.ToggleLooperPlaying();
     else if(strcmp(key, "looper_reverse") == 0)
-        e.ResetLooperPitchQuant(), e.SetLooperPitch(b ? -1.f : 1.f);
+        e.ResetLooperPitchQuant(), e.SetLooperPitch(on ? -1.f : 1.f);
     else if(strcmp(key, "looper_pitch") == 0)
         e.SetLooperPitch(f);
     else if(strcmp(key, "looper_scrub") == 0)
@@ -566,6 +650,12 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         inst->map_dirty_ms.store(now_ms(), std::memory_order_release);
         inst->map_dirty.store(true);
         inst->want_scan_files.store(true); /* re-scan: the slot's file changed */
+        /* "This slot's file changed" — what the hardware's FileCopier signals
+         * after a copy, and what makes each voice re-open on its next key press.
+         * Without it, assigning a file to the slot you are already on changed
+         * nothing you could hear (the voice kept the file it had), and with
+         * several voices in play the pads ended up holding different files. */
+        e.SetAllCopyOccurred();
     }
     else if(strcmp(key, "sample_clear") == 0)
     {
@@ -576,6 +666,7 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         inst->map_dirty_ms.store(now_ms(), std::memory_order_release);
         inst->map_dirty.store(true);
         inst->want_scan_files.store(true);
+        e.SetAllCopyOccurred(); /* back to the shipped sample on the next key */
     }
     else if(strcmp(key, "sample_dir") == 0)
     {
@@ -650,12 +741,20 @@ static void apply_state_json(ChompiInstance* inst, const char* json)
         "volume", "filter", "resonance", "saturate", "warble",
         "delay_time", "delay_feedback", "reverb", "final_comp", "input_gain",
         "input_monitor", "input_source", "monitor_mode", "octave", "bank",
-        "voice_mode", "fx_pre_loop",
+        "slot", "voice_mode", "fx_pre_loop",
     };
     char val[CHOMPI_PATH_LEN];
     for(size_t i = 0; i < sizeof(kKeys) / sizeof(kKeys[0]); i++)
         if(json_field(json, kKeys[i], val, sizeof(val)))
             apply_param(inst, kKeys[i], val);
+    /* The selection owns the Tape page: after the mode/bank/slot above have
+     * landed, the page must be showing that slot's stored values. */
+    apply_param(inst, "voice_mode", inst->saved.voice_mode);
+    {
+        char slotbuf[16];
+        snprintf(slotbuf, sizeof slotbuf, "%d", inst->selected_slot);
+        apply_param(inst, "slot", slotbuf);
+    }
 }
 
 /** JSON the shadow UI uses to build the parameter pages, and the entries the
@@ -801,15 +900,18 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
     inst->engine.SetInputSource(daisy::InputSource::LINE_IN);
     inst->engine.SetGain(1.f);
 
-    /* The per-slot CUBBI parameters (pitch, start/end, attack/decay, loop,
-     * sustain, gain, pan) are plain members on the engine that the firmware's
-     * UI initialises through OpenCubbiSlot() when a slot is picked. Nothing
-     * else does, so a port that skips this call plays from heap garbage.
-     * These are CHOMPI's defaults for an untouched slot. */
-    inst->engine.OpenCubbiSlot(1.f /*pitch*/, 0.f /*start*/, 1.f /*end*/,
-                               0.01f /*attack*/, 1.f /*decay*/,
+    /* The per-slot values (pitch, start/end, attack/decay, loop, sustain, gain,
+     * pan) are read from the store on every selection change and every key
+     * press, but the cache must not start on heap garbage — nothing else fills
+     * it before the first key. The store's defaults for an untouched slot are
+     * the hardware's (ui.h enc_defaults): 1x pitch, start 0, end 1, attack 0,
+     * decay 0, loop on, sustain on, unity gain (.704 on the encoder), pan
+     * centre. OpenCubbiSlot() writes the cache directly; LoadSlotValues() below
+     * then puts the selected slot's stored values in it. */
+    inst->engine.OpenCubbiSlot(1.f /*pitch ratio*/, 0.f /*start*/, 1.f /*end*/,
+                               0.f /*attack*/, 0.f /*decay*/,
                                true /*autoloop*/, true /*sustain*/,
-                               1.f /*gain*/, 0.5f /*pan*/);
+                               0.704f /*gain*/, 0.5f /*pan*/);
     /* The browser's root: a directory with symlinks to the shipped card set
      * and to the user's library, so one place shows both and nothing outside it
      * is reachable. Created here rather than assumed, because a module installed
@@ -823,6 +925,20 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
         snprintf(map_path, sizeof(map_path), "%s/samples.map", chompi::g_sample_dir);
         chompi::ReadSlotOverrideMap(map_path);
     }
+
+    /* The per-slot values the user has tuned, per (mode, bank, slot) — the
+     * Tape page's knobs. Read here for the same reason: the first key press
+     * must already use them. */
+    {
+        char values_path[CHOMPI_PATH_LEN];
+        snprintf(values_path, sizeof(values_path), "%s/slots.values", chompi::g_sample_dir);
+        chompi::ReadSlotValues(values_path);
+    }
+    inst->values_written = inst->values_saved = chompi::SlotValuesWriteCount();
+
+    /* What the selected slot holds, as the engine's cache: the page reads it,
+     * and the first key press applies it. */
+    inst->engine.LoadSlotValues(inst->engine.SelectedSlot());
 
     inst->want_scan_files.store(true);
 
@@ -936,12 +1052,24 @@ static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)
 
         if(e.GetVoiceMode() == daisy::VoiceMode::CUBBI)
         {
-            const size_t slot = daisy::KeyToSlot((size_t)button);
-            if(slot == daisy::kSlotNone)
+            /* CUBBI's keys ARE its pads: each one plays the sample in its own
+             * slot, and KeyToSlot() is the map. A key that is not a pad (the
+             * transport buttons on CHOMPI's panel) has no slot and is silent in
+             * this mode, exactly as on the hardware.
+             *
+             * The slot's own values are loaded by the engine's key path, one
+             * press at a time (PORT PATCH P19).
+             *
+             * PORT PATCH P20: this used to call SetVoiceSlot(slot, false) --
+             * which binds that file to EVERY voice -- on every press. A press
+             * therefore re-pointed voices that were mid-note at a file that had
+             * not finished opening, and a pad whose slot had no file took the
+             * whole keybed silent. That is the reported "pads start playing
+             * different samples" and "sometimes it plays white noise instead of
+             * the sample". One voice, opened once, is what the engine already
+             * does by itself. */
+            if(daisy::KeyToSlot((size_t)button) == daisy::kSlotNone)
                 return;
-            /* One voice file serves the whole slot, exactly as in the firmware:
-             * the UI called SetVoiceSlot() before the key request. */
-            e.SetVoiceSlot(slot, false);
         }
         e.request_fifo.PushBack(daisy::KeyRequest(daisy::KeyRequest::Type::START,
                                                   (float)(note - 60), button,
@@ -994,19 +1122,117 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     }
     if(strcmp(key, "state") == 0)
     {
+        /* The Tape page's values are NOT in here: they are per (mode, bank,
+         * slot) and live in the module's own store (slots.values, next to
+         * samples.map), which the host has no way to keep per Set. What the
+         * state has to carry is which slot is selected, so restoring a Set puts
+         * the page back on the same slot it was saved on. */
         const ChompiInstance::Saved& v = inst->saved;
         const int n = snprintf(buf, (size_t)buf_len,
             "{\"volume\":%.4f,\"filter\":%.4f,\"resonance\":%.4f,\"saturate\":%.4f,"
             "\"warble\":%.4f,\"delay_time\":%.4f,\"delay_feedback\":%.4f,\"reverb\":%.4f,"
             "\"final_comp\":%.4f,\"input_gain\":%.4f,\"input_monitor\":%d,"
             "\"input_source\":\"%s\",\"monitor_mode\":\"%s\",\"octave\":%d,\"bank\":%d,"
-            "\"voice_mode\":\"%s\",\"fx_pre_loop\":\"%s\"}",
+            "\"slot\":%d,\"voice_mode\":\"%s\",\"fx_pre_loop\":\"%s\"}",
             v.volume, v.filter, v.resonance, v.saturate, v.warble,
             v.delay_time, v.delay_feedback, v.reverb, v.final_comp, v.input_gain,
             v.input_monitor, v.input_source, v.monitor_mode, v.octave, v.bank,
-            v.voice_mode, v.fx_pre_loop);
+            inst->selected_slot, v.voice_mode, v.fx_pre_loop);
         return (n > 0 && n < buf_len) ? n : -1;
     }
+
+    /* Root page. */
+    if(strcmp(key, "volume") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.volume);
+    if(strcmp(key, "filter") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.filter);
+    if(strcmp(key, "resonance") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.resonance);
+    if(strcmp(key, "saturate") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.saturate);
+    if(strcmp(key, "warble") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.warble);
+    if(strcmp(key, "delay_time") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.delay_time);
+    if(strcmp(key, "delay_feedback") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.delay_feedback);
+    if(strcmp(key, "reverb") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.reverb);
+    if(strcmp(key, "final_comp") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.final_comp);
+
+    /* Tape page. These answer with the SELECTED slot's values -- the ones the
+     * next key press will use -- read straight out of the engine's cache, so a
+     * bank or slot change is reflected here immediately and there is no second
+     * copy to fall out of step with it. */
+    if(strcmp(key, "attack") == 0 || strcmp(key, "decay") == 0 || strcmp(key, "gain") == 0
+       || strcmp(key, "pan") == 0 || strcmp(key, "start") == 0 || strcmp(key, "end") == 0
+       || strcmp(key, "varspeed") == 0 || strcmp(key, "reverse") == 0
+       || strcmp(key, "sustain") == 0 || strcmp(key, "auto_loop") == 0)
+    {
+        float v9[chompi::kSlotValueCount];
+        bool  loop = true, sustain = true;
+        inst->engine.CopySlotValues(v9, &loop, &sustain);
+
+        if(strcmp(key, "attack") == 0)
+            return snprintf(buf, buf_len, "%.4f", v9[chompi::kSlotAttack]);
+        if(strcmp(key, "decay") == 0)
+            return snprintf(buf, buf_len, "%.4f", v9[chompi::kSlotDecay]);
+        if(strcmp(key, "gain") == 0)
+            return snprintf(buf, buf_len, "%.4f", v9[chompi::kSlotGain]);
+        if(strcmp(key, "pan") == 0)
+            return snprintf(buf, buf_len, "%.4f", v9[chompi::kSlotPan]);
+        if(strcmp(key, "start") == 0)
+            return snprintf(buf, buf_len, "%.4f", v9[chompi::kSlotStart]);
+        if(strcmp(key, "end") == 0)
+            return snprintf(buf, buf_len, "%.4f", v9[chompi::kSlotEnd]);
+        if(strcmp(key, "varspeed") == 0)
+            /* The knob is the pitch encoder's magnitude; the sign is Reverse. */
+            return snprintf(buf, buf_len, "%.4f", fabsf(v9[chompi::kSlotPitch]));
+        if(strcmp(key, "reverse") == 0)
+            return snprintf(buf, buf_len, "%s", v9[chompi::kSlotPitch] < 0.f ? "On" : "Off");
+        if(strcmp(key, "sustain") == 0)
+            return snprintf(buf, buf_len, "%s", sustain ? "On" : "Off");
+        return snprintf(buf, buf_len, "%s", loop ? "On" : "Off");
+    }
+
+    /* Looper page. */
+    if(strcmp(key, "looper_reverse") == 0)
+        return snprintf(buf, buf_len, "%s", inst->saved.looper_reverse);
+    if(strcmp(key, "looper_pitch") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_pitch);
+    if(strcmp(key, "looper_scrub") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_scrub);
+    if(strcmp(key, "looper_dub_gain") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_dub_gain);
+    /* Momentary actions have no state to report, and the idle option is the
+     * honest answer: the host then reads "not triggered" and writes the other
+     * option when the user picks it. */
+    if(strcmp(key, "looper_record") == 0 || strcmp(key, "looper_play") == 0
+       || strcmp(key, "sample_clear") == 0 || strcmp(key, "loop_clear") == 0)
+        return snprintf(buf, buf_len, "%s", "-");
+
+    /* Recorder page. */
+    if(strcmp(key, "record") == 0)
+        return snprintf(buf, buf_len, "%s", inst->recording ? "On" : "Off");
+    if(strcmp(key, "input_monitor") == 0)
+        /* Option NAME, like every other enum here: the host matches this string
+         * against the parameter's `options`, and a bare number is read as an
+         * index into the list it happens to be holding (see param_on()). */
+        return snprintf(buf, buf_len, "%s", inst->saved.input_monitor ? "On" : "Off");
+    if(strcmp(key, "input_gain") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.input_gain);
+    if(strcmp(key, "input_source") == 0)
+        return snprintf(buf, buf_len, "%s", inst->saved.input_source);
+
+    /* Setup page. */
+    if(strcmp(key, "bank") == 0)
+        return snprintf(buf, buf_len, "%d", inst->engine.GetBank());
+    if(strcmp(key, "slot") == 0)
+        return snprintf(buf, buf_len, "%d", inst->selected_slot);
+    if(strcmp(key, "octave") == 0)
+        return snprintf(buf, buf_len, "%d", inst->octave.load());
+
     if(strcmp(key, "split_voices") == 0)
         return snprintf(buf, buf_len, "%s", ""); /* one mixed voice for now */
     if(strcmp(key, "sample_dir") == 0)
@@ -1028,9 +1254,23 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         chompi::PresentSamplePath(path, presented, sizeof(presented));
         return snprintf(buf, buf_len, "%s", presented);
     }
+    /* --- the parameter pages, read back -----------------------------------
+     *
+     * Every knob on every page answers with the value it is actually set to.
+     * The host draws a knob's position and its "edited" marker from whatever
+     * this returns, so a key that is missing (they all were, except the root
+     * page and the samples page) shows up as 0 — which is exactly the report:
+     * "Volume is set at 0 when you first start the module but is actually at
+     * full". The values live in the mirror (ChompiInstance::Saved), which is
+     * also what `state` saves, so the two cannot disagree.
+     *
+     * Enums answer with the option NAME: the host matches the string against
+     * the parameter's `options` to choose the displayed entry, and a bare "1"
+     * would be read as an index into someone else's list. */
+
+    /* Where the file browser starts, and the fence around it (PORT PATCH P18).
+     * `sample_root` is the read-only answer; `portal_dir` moves it. */
     if(strcmp(key, "sample_root") == 0)
-        /* The filepath parameter's `root`: where the browser starts and the
-         * fence around it. */
         return snprintf(buf, buf_len, "%s",
                         chompi::g_portal_dir[0] ? chompi::g_portal_dir : "(unset)");
     if(strcmp(key, "debug_portal") == 0)

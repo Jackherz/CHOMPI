@@ -115,6 +115,56 @@ bool SlotHasOverride(int mode, int bank, int slot);
  *  is NOT ours: CHOMPI's erase path would otherwise delete it. (PORT PATCH P10) */
 bool IsManagedPath(const char* path);
 
+/* --- per-slot values (PORT PATCH P19) -------------------------------------
+ *
+ * The hardware keeps nine values per (mode, bank, slot) in its preset store and
+ * re-reads the ones belonging to a slot every time one of that slot's pads is
+ * pressed (NormalPage::OpenCubbiSlot -> DSPEngine::OpenCubbiSlot). The port
+ * needs the same table. Without it the Tape page's knobs were ONE global set of
+ * values shared by every slot and bank, so moving the Setup page's bank or slot
+ * changed nothing you could see or hear -- which is exactly what was reported
+ * from the device: "bank/slot unclear, changing them changes nothing".
+ *
+ * Field order follows the hardware's preset indexes (PresetManager::SetValue).
+ * Values are plain floats; `loop` and `sustain` are 1.0/0.0. */
+enum SlotValue
+{
+    kSlotPitch = 0,
+    kSlotStart,
+    kSlotEnd,
+    kSlotAttack,
+    kSlotDecay,
+    kSlotLoop,
+    kSlotSustain,
+    kSlotGain,
+    kSlotPan,
+    kSlotValueCount
+};
+
+/** The value in effect for a slot: the stored one if the slot was ever
+ *  touched, otherwise the hardware's default for an untouched slot
+ *  (ui.h enc_defaults: pitch .83 == 1x, start 0, end 1, attack 0, decay 0,
+ *  loop on, sustain on, gain .704 == unity, pan centre). */
+float GetSlotValue(int mode, int bank, int slot, int field);
+
+/** Writes one value. Called from set_param (the host's management thread). */
+void SetSlotValue(int mode, int bank, int slot, int field, float v);
+
+/** True when any value of that slot differs from the defaults -- i.e. the slot
+ *  is worth writing to the values file. */
+bool SlotValuesTouched(int mode, int bank, int slot);
+
+/** Everything the user has changed, as text: one line per touched slot,
+ *  "<mode> <bank> <slot> <9 floats>". Both return false/-1 on I/O failure; a
+ *  missing file is not an error (nothing changed yet). */
+bool WriteSlotValues(const char* path);
+int  ReadSlotValues(const char* path);
+
+/** How many values have been written since the module loaded. The I/O worker
+ *  watches this to know when the store needs saving (it is bumped by every
+ *  knob that edits a slot, from any thread). */
+unsigned SlotValuesWriteCount();
+
 /* --- the sample portal (PORT PATCH P18) -----------------------------------
  *
  * Where the file browser starts, and what a sample path looks like when the UI

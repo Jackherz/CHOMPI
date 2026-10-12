@@ -748,16 +748,13 @@ namespace daisy
 
                 cubbi_slot_ = slot;
                 latest_voice = free_idx;
-                SetGlobalPitch(fabsf(cubbi_pitch));
-                SetReverse(cubbi_pitch < 0.f);
-                SetStartPoint(cubbi_start);
-                SetEndPoint(cubbi_end);
-                SetAttack(cubbi_attack);
-                SetDecay(cubbi_decay);
-                SetAutoLoop(cubbi_autoloop);
-                SetSustainActive(cubbi_sustain);
-                SetGain(cubbi_gain);
-                SetPan(cubbi_pan);
+                /* PORT PATCH P19: this pad's own values, then apply them to the
+                 * voice being started -- what the hardware's pad handler does
+                 * when it calls OpenCubbiSlot(slot) before the key request
+                 * (NormalPage.h). Reading the cache instead is what made every
+                 * pad share one set of knob values. */
+                LoadSlotValues(slot);
+                ApplySlotValues(free_idx);
             }
             else /* JAMMI */
             {
@@ -824,7 +821,18 @@ namespace daisy
             chompi_voice[free_idx].SetVelocity(vel);
 
             if(voice_mode == VoiceMode::JAMMI)
+            {
+                /* PORT PATCH P19: JAMMI applies the SELECTED slot's values on
+                 * every press, the way CUBBI applies the pressed pad's. Its
+                 * envelope is per voice, and plenty of paths leave a voice with
+                 * the wrong one: Choke() rewrites decay to .01 on every
+                 * StopAllVoices (bank/mode switch, looper stop), and a voice
+                 * that keeps its file across a selection change would otherwise
+                 * keep the previous slot's attack forever. */
+                LoadSlotValues(voice_slot_);
+                ApplySlotValues(free_idx);
                 chompi_voice[free_idx].SetVarispeed(MidiNoteToPlaybackRatio(transpose_nn));
+            }
             else if(voice_mode == VoiceMode::CUBBI)
                 chompi_voice[free_idx].SetVarispeed(1.f);
 
@@ -1443,6 +1451,16 @@ namespace daisy
 
         inline bool IsErasing() { return erasing != 0; }
 
+        /* "A slot's file changed." On the hardware the FileCopier calls this
+         * after copying a sample into a slot, and the key path reads it back as
+         * copy_occurred to decide that a voice must re-open its file.
+         *
+         * PORT: the port has no copier -- its equivalent is an assignment
+         * through the sample map -- so the plugin calls this from that path.
+         * Without it, pointing a slot at a new file and pressing its key
+         * replayed whatever the voice already held: on a fresh module (nothing
+         * loaded yet) silence, and with several voices in play the pads end up
+         * holding different files. Both were reported from the device. */
         inline void SetAllCopyOccurred()
         {
             for(size_t i = 0; i < kMaxPoly; i++)
@@ -1487,6 +1505,155 @@ namespace daisy
                 return voice_slot_;
             
             return cubbi_slot_;
+        }
+
+        /* PORT PATCH P19: the per-slot values.
+         *
+         * On the hardware these live in the preset store, nine per (mode,
+         * bank, slot), and the UI's encoder array is a window onto whichever
+         * slot is selected. Two paths keep them honest:
+         *
+         *   - a pad press re-reads that slot's values into the cache and the
+         *     key path applies them (NormalPage::OpenCubbiSlot);
+         *   - a knob writes the selected slot's value and applies it live.
+         *
+         * The port had only the cache, one global set, so the Setup page's
+         * bank/slot knobs changed nothing and Attack and Decay looked wired
+         * together: CUBBI's key path re-applied CUBBI's values on every press,
+         * and nothing ever updated those. */
+        inline void SetSlotAttack(float val)   { StoreSelected(kSlotAttack, val);   cubbi_attack = val;   SetAttack(val); }
+        inline void SetSlotDecay(float val)    { StoreSelected(kSlotDecay, val);    cubbi_decay = val;    SetDecay(val); }
+        inline void SetSlotStart(float val)    { StoreSelected(kSlotStart, val);    cubbi_start = val;    SetStartPoint(val); }
+        inline void SetSlotEnd(float val)      { StoreSelected(kSlotEnd, val);      cubbi_end = val;      SetEndPoint(val); }
+        inline void SetSlotGain(float val)     { StoreSelected(kSlotGain, val);     cubbi_gain = val;     SetGain(val); }
+        inline void SetSlotPan(float val)      { StoreSelected(kSlotPan, val);      cubbi_pan = val;      SetPan(val); }
+        inline void SetSlotAutoLoop(bool loop) { StoreSelected(kSlotLoop, loop ? 1.f : 0.f); cubbi_autoloop = loop; SetAutoLoop(loop); }
+        inline void SetSlotSustain(bool sus)   { StoreSelected(kSlotSustain, sus ? 1.f : 0.f); cubbi_sustain = sus; SetSustainActive(sus); }
+        /* Pitch has two units and they are not interchangeable: the UI (and the
+         * hardware's preset store) holds the ENCODER value, 0..1 with the sign
+         * meaning reverse, while the engine's cubbi_pitch is a playback RATIO
+         * (NormalPage::OpenCubbiSlot converts between them exactly once). Only
+         * SetSlotPitchFromUi()/LoadSlotValues() may write it, so no caller has
+         * to remember which is which. */
+
+        /** The slot the Tape page's knobs edit: the word the UI set. */
+        inline size_t SelectedSlot() const { return voice_slot_; }
+
+        /** Writes one value into the selected slot's store. A knob is an edit of
+         *  that slot, so it is recorded there -- the hardware's encoder path
+         *  does exactly this (PresetManager::SetValue in OnEncoderTurned). */
+        inline void StoreSelected(chompi::SlotValue field, float val)
+        {
+            const int m = int(voice_mode);
+            chompi::SetSlotValue(m, bank[m], (int)voice_slot_, (int)field, val);
+        }
+
+        /** Reads `slot`'s nine stored values into the cache. The hardware does
+         *  this for the pressed pad before starting the voice, which is what
+         *  makes bank/slot audible: each slot carries its own envelope, gain,
+         *  pan, pitch and loop settings. */
+        inline void LoadSlotValues(size_t slot)
+        {
+            const int m = int(voice_mode);
+            const int b = bank[m];
+            const float enc = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotPitch);
+            cubbi_pitch    = (enc < 0.f ? -1.f : 1.f) * PitchEncoderToRatio(fabsf(enc));
+            cubbi_start    = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotStart);
+            cubbi_end      = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotEnd);
+            cubbi_attack   = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotAttack);
+            cubbi_decay    = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotDecay);
+            cubbi_autoloop = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotLoop) >= .5f;
+            cubbi_sustain  = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotSustain) >= .5f;
+            cubbi_gain     = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotGain);
+            cubbi_pan      = chompi::GetSlotValue(m, b, (int)slot, chompi::kSlotPan);
+        }
+
+        /** The cache, for a page that has to show what the selected slot holds
+         *  ("what the engine will actually use"), and for the state blob. */
+        inline void CopySlotValues(float* out9, bool* loop, bool* sustain) const
+        {
+            /* Back to the UI's unit: the page shows a knob it can hand straight
+             * back to set_param. */
+            out9[chompi::kSlotPitch]  = (cubbi_pitch < 0.f ? -1.f : 1.f)
+                                        * PitchRatioToEncoder(fabsf(cubbi_pitch));
+            out9[chompi::kSlotStart]  = cubbi_start;
+            out9[chompi::kSlotEnd]    = cubbi_end;
+            out9[chompi::kSlotAttack] = cubbi_attack;
+            out9[chompi::kSlotDecay]  = cubbi_decay;
+            out9[chompi::kSlotGain]   = cubbi_gain;
+            out9[chompi::kSlotPan]    = cubbi_pan;
+            *loop    = cubbi_autoloop;
+            *sustain = cubbi_sustain;
+        }
+
+        /** Applies the cache to one voice -- what the key path does after it
+         *  has loaded the slot's values (or, in JAMMI, the selected slot's). */
+        inline void ApplySlotValues(size_t voice)
+        {
+            const size_t saved_latest = latest_voice;
+            latest_voice = voice; /* the setters below write to latest_voice */
+            SetGlobalPitch(fabsf(cubbi_pitch));
+            SetReverse(cubbi_pitch < 0.f);
+            SetStartPoint(cubbi_start);
+            SetEndPoint(cubbi_end);
+            SetAttack(cubbi_attack);
+            SetDecay(cubbi_decay);
+            SetAutoLoop(cubbi_autoloop);
+            SetSustainActive(cubbi_sustain);
+            SetGain(cubbi_gain);
+            SetPan(cubbi_pan);
+            latest_voice = saved_latest;
+        }
+
+        /** The firmware's pitch-encoder curve (NormalPage::OpenCubbiSlot): a
+         *  0..1 UI value becomes a ratio in 0.01..2, always positive. */
+        static float PitchEncoderToRatio(float val)
+        {
+            val = val < .5f ? (.5f - val) * -2.f : (val - .5f) * 2.f; /* 1 - 0 - 1 */
+            const float inv = val < 0.f ? -1.f : 1.f;                 /* magnitude only */
+
+            if(fabsf(val) < .33f)
+                return fabsf(val * 1.484848f + .01f * inv);
+            if(fabsf(val) < .66f)
+                return fabsf((val - .33f * inv) * 1.515151f + .5f * inv);
+            return fabsf((val - .66f * inv) * 2.941176f + 1.f * inv);
+        }
+
+        /** The inverse of PitchEncoderToRatio: a playback ratio back onto the
+         *  encoder's 0..1 scale. Used when a page has to show the ratio the
+         *  engine holds, so the knob it draws maps back to the same ratio. */
+        static float PitchRatioToEncoder(float ratio)
+        {
+            ratio = fabsf(ratio);
+            if(ratio < .01f)  ratio = .01f;
+            if(ratio > 2.f)   ratio = 2.f;
+            /* The forward curve's breakpoints land on encoder .5 (ratio .01),
+             * .665 (ratio .5) and .83 (ratio 1) -- .83 being the hardware's
+             * default, which is why 1x reads as .83 and not as 1.0. */
+            if(ratio < .5f)
+                return .5f + (ratio - .01f) / 2.969696f;
+            if(ratio < 1.f)
+                return .665f + (ratio - .5f) / 3.030302f;
+            return .83f + (ratio - 1.f) / 5.882352f;
+        }
+
+        /** The slot's pitch from the UI's two controls: the varispeed value
+         *  (0..1, centre = original speed) and the reverse switch. On the
+         *  hardware the pitch encoder IS the pitch — its lower half plays the
+         *  sample backwards — and the key path derives reverse from the sign on
+         *  every press (see the CUBBI branch above), so the switch has to be
+         *  part of the slot's value to survive a key. */
+        inline void SetSlotPitchFromUi(float varspeed, bool reverse)
+        {
+            const float ratio = PitchEncoderToRatio(daisysp::fclamp(varspeed, 0.f, 1.f));
+            cubbi_pitch = reverse ? -ratio : ratio;
+            /* Store the ENCODER value, not the ratio: the store is a picture of
+             * the UI, and the page reads .83 back as "1x" the same way the
+             * hardware's encoder does. */
+            StoreSelected(chompi::kSlotPitch, reverse ? -daisysp::fclamp(varspeed, 0.f, 1.f)
+                                                      : daisysp::fclamp(varspeed, 0.f, 1.f));
+            SetGlobalPitch(ratio);
+            SetReverse(reverse);
         }
 
         // these should really be in a struct defined in the presets file
@@ -1625,7 +1792,7 @@ namespace daisy
             for(size_t i = 0; i < kMaxPoly; i++)
             {
                 const int n = snprintf(buf + off, len - (size_t)off,
-                                       "%sv%zu p%d(g%d/e%d) key%d sz%ld op%zu sk%zu rd%zu buf%zu dj%d dt%d last%zu ram%d slot%d %s\n",
+                                       "%sv%zu p%d(g%d/e%d) key%d sz%ld op%zu sk%zu rd%zu buf%zu dj%d dt%d last%zu ram%d slot%d at=%.4f rt=%.4f fs=%.3f fe=%.3f ib%d rv%d rs%zu seg%d %s\n",
                                        i ? " | " : "", i,
                                        chompi_voice[i].IsPlaying() ? 1 : 0,
                                        chompi_voice[i].env_gate_ ? 1 : 0,
@@ -1641,6 +1808,12 @@ namespace daisy
                                        chompi_voice[i].last_read_size_,
                                        chompi_voice[i].using_ram ? 1 : 0,
                                        (int)chompi_voice[i].GetSlot(),
+                                       chompi_voice[i].att_time_, chompi_voice[i].rel_time_,
+                                       chompi_voice[i].fstart_, chompi_voice[i].fend_,
+                                       chompi_voice[i].is_buffered ? 1 : 0,
+                                       chompi_voice[i].reverse_ ? 1 : 0,
+                                       chompi_voice[i].read_samps.GetNumElements(),
+                                       (int)chompi_voice[i].env_.GetCurrentSegment(),
                                        chompi_voice[i].fname_rx);
                 if(n <= 0 || n >= (int)(len - (size_t)off))
                     break;

@@ -49,6 +49,12 @@ static double goertzel(const double* x, long n, double f)
     return s1 * s1 + s2 * s2 - c * s1 * s2;
 }
 
+/* "Is it silent?" is a question about THIS build's level: the hardware's gain
+ * default (.704 on the encoder) is unity, which puts this directory's sample at
+ * roughly 0.005 measured over a press -- exactly where an absolute 0.005
+ * threshold sits. Anchor on the baseline press instead. */
+static double g_silent_below = 0.002;
+
 /* Presses the key, renders `seconds` of audio, releases it, and reports what
  * came out. rms is the whole point: silence is 0.0000. */
 static double press_note(const char* label, int note, double seconds)
@@ -93,7 +99,7 @@ static double press_note(const char* label, int note, double seconds)
 
     if(label)
         printf("%-30s rms=%7.4f  peak=%6.1fHz  %s\n", label, rms, best_f,
-               rms > 0.005 ? "sound" : "SILENT");
+               rms > g_silent_below ? "sound" : "SILENT");
     return rms;
 }
 
@@ -185,7 +191,8 @@ int main(int argc, char** argv)
 
     const double base = press("1. slot 1 (baseline)", 0.4);
     dump_voices("baseline");
-    if(base <= 0.005) { printf("   baseline is silent — nothing to compare\n"); fails++; }
+    if(base <= 0.002) { printf("   baseline is silent — nothing to compare\n"); fails++; }
+    g_silent_below = base * 0.4; /* a later press at 40% of the first one is the symptom */
 
     /* One step of the knob, which is what the device report describes. */
     set_slot(2);
@@ -195,7 +202,7 @@ int main(int argc, char** argv)
     set_slot(1);
     settle(1200);
     const double back = press("3. back to slot 1", 0.4);
-    if(back <= 0.005) { printf("   sound did NOT come back\n"); fails++; }
+    if(back <= base * 0.4) { printf("   sound did NOT come back\n"); fails++; }
 
     /* Slot 0: our param allowed it, and there is no cubbi_a0.wav. */
     set_slot(0);
@@ -205,7 +212,7 @@ int main(int argc, char** argv)
     set_slot(1);
     settle(1200);
     const double back0 = press("5. back to slot 1 (from 0)", 0.4);
-    if(back0 <= 0.005) { printf("   sound did NOT come back\n"); fails++; }
+    if(back0 <= base * 0.4) { printf("   sound did NOT come back\n"); fails++; }
 
     /* A sweep, the way a knob gets scrolled before it settles. */
     for(int s = 1; s <= 15; s++)
@@ -216,7 +223,7 @@ int main(int argc, char** argv)
     set_slot(1);
     settle(1500);
     const double swept = press("6. back to slot 1 (after sweep)", 0.4);
-    if(swept <= 0.005) { printf("   sound did NOT come back\n"); fails++; }
+    if(swept <= base * 0.4) { printf("   sound did NOT come back\n"); fails++; }
 
     printf("fds after the knob sweep: %d\n", fd_count());
 
@@ -239,7 +246,7 @@ int main(int argc, char** argv)
     }
     settle(1200);
     const double after_keys = press_note("8. key 48 after a key sweep", 48, 0.4);
-    if(after_keys <= 0.005) { printf("   sound did NOT come back\n"); fails++; }
+    if(after_keys <= base * 0.4) { printf("   sound did NOT come back\n"); fails++; }
 
     printf("fds after the key sweep: %d\n", fd_count());
 
@@ -253,7 +260,7 @@ int main(int argc, char** argv)
 
     settle(1200);
     const double after_fast = press_note("9. key 48 after fast playing", 48, 0.4);
-    if(after_fast <= 0.005) { printf("   sound did NOT come back\n"); fails++; }
+    if(after_fast <= base * 0.4) { printf("   sound did NOT come back\n"); fails++; }
 
     /* A file that has since been deleted is the case that used to be fatal:
      * the open fails, and a failed open left the reader's pending-open count
@@ -267,7 +274,7 @@ int main(int argc, char** argv)
     wait_ms(1200);
     press_note("10. key 50 (assigned file gone)", 50, 0.4);
     const double after_vanished = press_note("10. key 48 still plays", 48, 0.4);
-    if(after_vanished <= 0.005) { printf("   a missing file silenced the module\n"); fails++; }
+    if(after_vanished <= base * 0.4) { printf("   a missing file silenced the module\n"); fails++; }
     printf("fds after the vanished file: %d\n", fd_count());
     dump_voices("after the vanished file");
 

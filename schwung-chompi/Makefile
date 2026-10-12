@@ -96,7 +96,8 @@ $(AARCH64_OUT): $(PORT_SRC) $(wildcard $(DSP_DIR)/engine/*.h) $(wildcard $(DSP_D
 # Small dev probes that dlopen the built .so and exercise the plugin ABI
 # without a Move: param serving, state round-trip, key handling. `tools`
 # builds them for HOST, `tools-aarch64` for the device (then scp them over).
-TOOL_SRC  := tools/serve_params.cpp tools/state_roundtrip.cpp tools/key_probe.cpp
+TOOL_SRC  := tools/serve_params.cpp tools/state_roundtrip.cpp tools/key_probe.cpp \
+             tools/param_readback_probe.cpp
 TOOLS     := $(patsubst tools/%.cpp,$(BUILD)/%,$(TOOL_SRC))
 TOOLS_A64 := $(patsubst tools/%.cpp,$(BUILD)/aarch64/%,$(TOOL_SRC))
 

@@ -131,6 +131,173 @@ inline void Put(int mode, int bank, int slot, const char* abs_path)
 }
 } // namespace
 
+/* --- per-slot values (PORT PATCH P19) -------------------------------------
+ *
+ * Same seqlock discipline as the sample map: the audio thread reads these on
+ * every key press (the CUBBI path loads the pressed pad's values), the host's
+ * thread writes them when a knob moves. A torn read would put a wrong attack
+ * time on one note, so writers bump g_values_seq and readers of the whole slot
+ * (LoadSlotValues in the engine) retry when the sequence moved under them.
+ */
+float g_values[kSlotModes][kSlotBanks][kSlotCount][kSlotValueCount];
+bool  g_values_touched[kSlotModes][kSlotBanks][kSlotCount];
+std::atomic<uint32_t> g_values_seq{0};
+uint32_t g_values_writes = 0;
+
+inline void ValuesWriteBegin() { g_values_seq.fetch_add(1, std::memory_order_release); }
+inline void ValuesWriteEnd()   { g_values_seq.fetch_add(1, std::memory_order_release); }
+
+/* The hardware's defaults for a slot nobody has touched (ui.h enc_defaults,
+ * read through the same mapping OpenCubbiSlot uses). */
+inline float DefaultValue(int field)
+{
+    switch(field)
+    {
+        case kSlotPitch:   return .83f;   /* 1x: .83 on the pitch encoder's own curve */
+        case kSlotStart:   return 0.f;
+        case kSlotEnd:     return 1.f;
+        case kSlotAttack:  return 0.f;
+        case kSlotDecay:   return 0.f;
+        case kSlotLoop:    return 1.f;
+        case kSlotSustain: return 1.f;
+        case kSlotGain:    return .704f;  /* unity: SetGain maps .704 -> 1.0 */
+        case kSlotPan:     return .5f;
+        default:           return 0.f;
+    }
+}
+
+float GetSlotValue(int mode, int bank, int slot, int field)
+{
+    if(!Valid(mode, bank, slot) || field < 0 || field >= kSlotValueCount)
+        return DefaultValue(field);
+    if(!g_values_touched[mode][bank][slot - 1])
+        return DefaultValue(field);
+    return g_values[mode][bank][slot - 1][field];
+}
+
+void SetSlotValue(int mode, int bank, int slot, int field, float v)
+{
+    if(!Valid(mode, bank, slot) || field < 0 || field >= kSlotValueCount)
+        return;
+
+    ValuesWriteBegin();
+    float* row = g_values[mode][bank][slot - 1];
+    if(!g_values_touched[mode][bank][slot - 1])
+    {
+        /* First touch of this slot: start the row from the defaults, so the
+         * fields the user is NOT turning keep the hardware's values rather than
+         * the zero the array happened to hold. Getting this wrong is not
+         * subtle: the first knob on a slot used to set that slot's end point to
+         * 0, i.e. every subsequent key press played an empty region of the file
+         * -- silence, from a knob that has nothing to do with the end point. */
+        for(int f = 0; f < kSlotValueCount; f++)
+            row[f] = DefaultValue(f);
+        g_values_touched[mode][bank][slot - 1] = true;
+    }
+    row[field] = v;
+    ValuesWriteEnd();
+    g_values_writes++;
+}
+
+unsigned SlotValuesWriteCount()
+{
+    return g_values_writes;
+}
+
+bool SlotValuesTouched(int mode, int bank, int slot)
+{
+    if(!Valid(mode, bank, slot))
+        return false;
+    return g_values_touched[mode][bank][slot - 1];
+}
+
+bool WriteSlotValues(const char* path)
+{
+    if(path == nullptr || path[0] == '\0')
+        return false;
+
+    static float snapshot[kSlotModes][kSlotBanks][kSlotCount][kSlotValueCount];
+    static bool  touched[kSlotModes][kSlotBanks][kSlotCount];
+    for(int attempt = 0; attempt < 64; attempt++)
+    {
+        const uint32_t before = g_values_seq.load(std::memory_order_acquire);
+        if(before & 1u)
+            continue;
+        memcpy(snapshot, g_values, sizeof(g_values));
+        memcpy(touched, g_values_touched, sizeof(g_values_touched));
+        if(g_values_seq.load(std::memory_order_acquire) == before)
+            break;
+    }
+
+    char tmp[kSlotPathMax + 8];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE* f = fopen(tmp, "w");
+    if(f == nullptr)
+        return false;
+
+    int written = 0;
+    for(int m = 0; m < kSlotModes; m++)
+        for(int b = 0; b < kSlotBanks; b++)
+            for(int s = 0; s < kSlotCount; s++)
+            {
+                if(!touched[m][b][s])
+                    continue;
+                const float* v = snapshot[m][b][s];
+                if(fprintf(f, "%d %d %d %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g\n",
+                           m, b, s + 1, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]) > 0)
+                    written++;
+            }
+    const bool ok = fclose(f) == 0;
+    if(!ok)
+    {
+        remove(tmp);
+        return false;
+    }
+    (void)written;
+    return rename(tmp, path) == 0;
+}
+
+int ReadSlotValues(const char* path)
+{
+    if(path == nullptr || path[0] == '\0')
+        return -1;
+    FILE* f = fopen(path, "r");
+    if(f == nullptr)
+        return -1;
+
+    /* The file is the whole truth: clear the table first so a slot the user
+     * reset while the module was unloaded does not come back. */
+    ValuesWriteBegin();
+    memset(g_values, 0, sizeof(g_values));
+    memset(g_values_touched, 0, sizeof(g_values_touched));
+    ValuesWriteEnd();
+
+    char line[256];
+    int  loaded = 0;
+    while(fgets(line, sizeof line, f) != nullptr)
+    {
+        if(line[0] == '#' || line[0] == '\n' || line[0] == '\0')
+            continue;
+        int   m = -1, b = -1, s = -1;
+        float v[kSlotValueCount];
+        const int n = sscanf(line, "%d %d %d %f %f %f %f %f %f %f %f %f",
+                             &m, &b, &s, &v[0], &v[1], &v[2], &v[3], &v[4],
+                             &v[5], &v[6], &v[7], &v[8]);
+        if(n < 3 + 1)
+            continue;
+        /* Fields the file does not carry keep their default: an older file with
+         * fewer columns still loads the ones it has. */
+        for(int field = 0; field < kSlotValueCount; field++)
+        {
+            const float value = (3 + field < n) ? v[field] : DefaultValue(field);
+            SetSlotValue(m, b, s, field, value);
+        }
+        loaded++;
+    }
+    fclose(f);
+    return loaded;
+}
+
 void SetSlotOverride(int mode, int bank, int slot, const char* abs_path)
 {
     if(!Valid(mode, bank, slot))

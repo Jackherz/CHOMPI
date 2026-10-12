@@ -307,17 +307,23 @@ int main(int argc, char** argv)
     /* P11: touching a slot whose file is missing must never create files
      * outside the module's own directory. Two halves, so the asymmetry is
      * pinned: a user-library path stays missing (no stubs in somebody's
-     * library), a convention path still becomes the placeholder the firmware
-     * would have made. */
+     * library), and a convention path in the module's own directory may become
+     * a placeholder -- that is what FatFS FA_OPEN_ALWAYS does, and the recorder
+     * relies on it.
+     *
+     * A KEY PRESS is not a touch, though: the firmware's own CUBBI key path
+     * returns early when `file_exists` is false (DSPEngine's "no file in that
+     * slot"), so nothing is opened and no placeholder appears. The port used to
+     * open every voice on every press (SetVoiceSlot, removed as P20), which is
+     * what created the empty files this probe used to expect. */
     remove("/tmp/chompi_missing_probe.wav");
     api->set_param(inst, "slot", "5");
     wait_for_scan(300);
     api->set_param(inst, "sample_file", "/tmp/chompi_missing_probe.wav");
     wait_for_scan(1200);
 
-    /* Play the two slots: the open happens on the key path (SetVoiceSlot), not
-     * on the selection knob. 55 -> slot 5 (assigned, file gone) and 57 -> slot
-     * 6 (no assignment, no file on this card). */
+    /* Play the two slots: 55 -> slot 5 (assigned, file gone) and 57 -> slot 6
+     * (no assignment, no file on this card). Neither may create anything. */
     note_press(55, 0.25);
     note_press(57, 0.25);
     wait_for_scan(600);
@@ -325,9 +331,9 @@ int main(int argc, char** argv)
     const bool user_stub = (stat("/tmp/chompi_missing_probe.wav", &st) == 0);
     char managed[512];
     snprintf(managed, sizeof managed, "%s/samples/cubbi_a6.wav", dir);
-    const bool managed_ok = (stat(managed, &st) == 0);
-    printf("P11 create-guard: user-path stub=%d (want 0), managed placeholder=%d (want 1)\n",
-           user_stub, managed_ok);
+    const bool managed_stub = (stat(managed, &st) == 0);
+    printf("P11 create-guard: user-path stub=%d (want 0), managed stub=%d (want 0: a key press opens nothing for a slot with no file)\n",
+           user_stub, managed_stub);
 
     /* This probe walks slots 3-6, so the engine's placeholder behaviour leaves
      * 0-byte convention files behind in the module's samples/ directory. Remove
@@ -465,7 +471,7 @@ int main(int argc, char** argv)
                     && reloaded > 0.50 /* the map persisted */
                     && cleared < 0.25
                     && assigned_slot3 && cancel_clean && back_to_stock
-                    && flushed && !user_stub && managed_ok
+                    && flushed && !user_stub && !managed_stub
                     && root_reported && builtin_link && userlib_link
                     && presented_builtin && presented_readable
                     && presented_cancel_clean && stored_canonical
