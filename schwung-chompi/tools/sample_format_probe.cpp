@@ -40,11 +40,9 @@ static int              checks = 0, failures = 0;
 
 static const double kTone404 = 404.25; /* 440 Hz in the file, 44.1/48 engine */
 
-/* PORT PATCH P22: the pad to play the tone on. The pads are a chromatic ladder
- * whose C is the bottom-left pad (MIDI 68), so that pad is the slot's own
- * speed (1.00x) -- an external MIDI note like 48 would land a few semitones up
- * the ladder and read 26% high. */
-static const int kToneNote = 68;
+/* The pad to play the tone on. The keybed is a piano; pad 75 is the C at the
+ * sample's own speed (1.00x). Pad 68 is that C an octave down. */
+static const int kToneNote = 75; /* the piano C at 1.00x */
 
 static void check(const char* what, bool ok, const char* detail)
 {

@@ -107,9 +107,9 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 
 | CHOMPI | Move / Schwung |
 | --- | --- |
-| 15 keys (C3–C5) | MIDI notes; the pad keybed is one slot per octave (P22) |
+| 15 keys (C3–C5) | the 32 pads, as a piano. One sample, every pad (see below) |
 | velocity-sensitive key press | note-on velocity → key request |
-| 8 knobs | `chain_params` — 35 entries, paged by the shadow UI |
+| 8 knobs | `chain_params` — the on-screen controls, paged by the shadow UI |
 | pitch/speed fader | `varspeed`, `looper_pitch`, `looper_scrub` |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
@@ -128,7 +128,7 @@ root / tape / looper / recorder / setup / **samples**) and the knob list from
 the ids in `chain_params` are the same ids `state` writes, so a saved chain
 reloads with the same knobs, mode, bank and octave.
 
-Beyond the 35 knob entries the plugin also serves a few keys that are *not*
+Beyond the knob entries the plugin also serves a few keys that are *not*
 in `chain_params`, so they never appear in the UI but stay readable/writable
 by a chain or by hand: `monitor_mode` (`both` / `hp` / `sendret`),
 `record` (off/on — the CHOMPI capture button, as opposed to the looper's
@@ -138,43 +138,28 @@ still has work), `debug_voice` (one line per voice — playing, envelope gate,
 assigned key, file size, pending open/seek/read counts, buffered samples, the
 file it holds; this is the reading to ask for when a voice goes quiet),
 `sample_slot` (the slot the Samples page is editing) and
-`sample_map` (the assignments for that mode+bank, `"1=/abs/path;3=/other;"`),
+`sample_map` (the one sample's assignment, `"1=/abs/path;"`),
 plus `vu_in` / `vu_out` (envelope followers). All are in-memory reads — safe
 to poll.
 
-### Assigning a sample to a slot (one octave of the keybed)
+### One sample, on a piano
 
-The pads are a **chromatic keybed**, read left to right and bottom to top, and
-**one slot is one octave** — twelve pads — of it:
+The pads are a piano. Bottom-left is MIDI 68. Black pads are the sharps, one
+column to the right of the white they split. Every pad sounds:
 
 ```
-row 1   C   C#  D   D#  E   F   F#  G
-row 2   G#  A   A#  B   C   C#  D   D#
-row 3   E   F   F#  G   G#  A   A#  B
-row 4   C   C#  D   D#  E   F   F#  G
+row 1   C   D   E   F   G   A   B   C
+row 2   ·   C#  D#  ·   F#  G#  A#  ·
+row 3   C   D   E   F   G   A   B   C
+row 4   ·   C#  D#  ·   F#  G#  A#  ·
 ```
 
-Bottom-left is MIDI 68 on the Move's 4×8 grid. Every pad sounds, and each row
-carries the ladder on by eight semitones, so the top row is the C two octaves
-above the bottom-left pad. The slot you selected owns the **first twelve pads**;
-the next twelve are the **next slot up**, which is why the surface can show
-three slots at once (with `slot` = 5 it is slots 5 and 6 in full, plus the first
-eight pads of 7). The `slot` knob pages that window through the slots.
+The dot pads are where a piano has no key. They are not silent: each plays the
+white key below it, one octave higher. The C at the end of row 1 (pad 75) and
+the C at the start of row 3 (pad 84) play the sample at its own speed. The
+`octave` knob transposes the whole keyboard, one octave a step.
 
-Within an octave the pad is the pitch — the octave's C plays the sample at its
-own speed, the pads above it play it faster, up to the B at 1.89× — so the one
-file you assign is playable over that whole octave. The `octave` knob transposes
-the whole keybed an octave a step.
-
-This is the model the Munchi Tape reference lays out on its pads (it uses a
-piano shape there), and it is why the Samples page's knob is called
-**Slot (1 octave)** and the page itself **Samples (1 slot = 1 octave)**. The
-device's Help viewer gets the same words (`module/help.json`, "A slot is an
-octave").
-
-`slot` selects which slot 1–14 the Samples page is editing (slot 15 is the
-recorder's buffer, and an assignment to it is refused with a message rather
-than silently dropped). `sample_file` is a `filepath` param: the host opens
+There is one sample. `sample_file` is a `filepath` param: the host opens
 its browser, and with `live_preview` set, jogging through the list assigns as
 you go so you hear each candidate before committing. Backing out restores the
 previous value, which is the same path we reported — that is a *clear*, not an
@@ -296,7 +281,7 @@ host hands the module the job of not leaving threads behind.
 
 So `destroy_instance`:
 
-* sets the instance's `stopping` flag, then **waits until the worker is out of
+* sets the instance's worker is out of
   that instance** (`worker_busy`) before freeing anything. That wait used to be
   a fixed 2 ms sleep — a guess about how long a file operation takes, and wrong
   on a device with a slow card, where the worker stayed inside memory that had
@@ -403,4 +388,6 @@ the state round-trip came back byte-identical.
 
 CHOMPI's firmware and samples are MIT (© 2026 CHOMPI Club, see the root
 `LICENSE`). The vendored DSP keeps that licence; the adapter is under the
+same terms.
+e; the adapter is under the
 same terms.

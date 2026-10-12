@@ -11,8 +11,10 @@
  *
  *   CHOMPI                       Move / Schwung
  *   ---------------------------------------------------------------------
- *   25-key chromatic keyboard    MIDI notes 48..72 (Move pads/keys/keys mode,
- *                                or any external controller)
+ *   25-key chromatic keyboard    the 32 pads, as a piano (module/dsp
+ *                                chompi_move.cpp keybed). The host delivers
+ *                                pads as MIDI 68..99; this module turns the
+ *                                pad into a piano pitch. One sample, every pad.
  *   encoders 1..6                chain_params (set_param) driven by the
  *                                shadow UI knobs, see ui_hierarchy JSON
  *   KEY_26 record / KEY_27 play  set_param looper_record / looper_play
@@ -59,75 +61,60 @@
 
 /* ---- the keybed on the 32 pads -------------------------------------------
  *
- * PORT PATCH P22.
+ * PORT PATCH P22, simplified.
  *
- * Move's 32 pads are MIDI 68..99, four rows of eight, the bottom row first, and
- * they are a chromatic keybed read left to right and bottom to top: pad 68 is
- * the C the selected slot starts on, pad 69 its C#, pad 80 the C of the next
- * octave, and so on. Every pad sounds. Notes that are not pads (a MIDI
- * keyboard, or a host transposition that moved the pads) continue the same
- * ladder below and above the surface.
+ * One sample. Every pad plays it, higher or lower by which pad is pressed.
+ * There is no slot knob and no second sample on the keybed: JAMMI, CUBBI and
+ * bank are engine bookkeeping for where a file is named, and they are pinned
+ * so none of them can put a different file under a pad.
  *
- * That layout is half the story. The other half is what a SLOT is here:
+ * Move's 32 pads arrive as MIDI 68..99, four rows of eight, the bottom row
+ * first. The host's pad_layout stays "chromatic" so those note numbers do not
+ * move; this table is what turns a pad into a piano pitch. A note that is not
+ * a pad (a MIDI keyboard) is read from middle C (note 60 = the sample's own
+ * speed), so a keyboard and the pads agree on what 1.00x means.
  *
- *   ONE SLOT IS ONE OCTAVE -- twelve pads.
+ * The surface is a piano, not a chromatic ladder and not a piano with silent
+ * gaps:
  *
- * On the hardware one pad is one slot -- 25 keys for 15 slots, so a sample
- * lives on a single key and the rest of the keybed plays its neighbours. Here
- * the slot you select with the `slot` knob owns the first twelve pads, the next
- * twelve are the NEXT slot up, and the surface is two and two thirds octaves
- * tall: slot 5 shows slots 5 and 6 in full, plus the first eight pads of 7.
- * The knob pages that window through the slots.
+ *   row 1 (68..75)   C  D  E  F  G  A  B  C     white keys
+ *   row 2 (76..83)   ·  C# D# ·  F# G# A# ·     black keys, one column right
+ *   row 3 (84..91)   C  D  E  F  G  A  B  C
+ *   row 4 (92..99)   ·  C# D# ·  F# G# A# ·
  *
- * Within a slot's octave the pad decides the PITCH: the octave's C plays the
- * sample at its own speed (1.00x), the pads above it play it faster, up to the
- * B at 1.89x. So a sample covers an octave rather than a pad -- load your own
- * WAV into a slot and you can play that whole octave with it.
+ * C# sits above D, the way a grid has to place a key that lives between two
+ * whites. The three columns a piano leaves empty (above C, above F, and above
+ * the octave C) are not silent: each plays the white key below it, one octave
+ * higher. The `octave` knob transposes the whole keybed, one octave a step.
  *
- * The `octave` knob transposes the whole keybed, an octave per step, in both
- * voices. JAMMI has no slots: one sample plays the whole keybed and the pitch is
- * the pad's distance from pad 80 (its own speed), the way CHOMPI's keybed reads
- * the keyboard from its own middle C.
+ * Pitches are semitones from the sample's own speed. That speed is the C that
+ * ends the lower white row and starts the upper one (pads 75 and 84).
  */
-static const int kMovePadLow   = 68;  /* bottom-left pad (MovePads[0]) */
-static const int kMovePadCount = 32;  /* four rows of eight: MIDI 68..99 */
-/* Pads in an octave -- and one slot is one octave -- so this is the slot span. */
-static const int kKeybedSlotSpan = 12;
-/* The pad JAMMI plays the sample's own speed on: twelve pads up from the bottom
- * left, which is the C the second octave of the surface starts on. Deliberately
- * the same pad a slot's octave starts on in CUBBI, so pad 80 -- twelve semitones
- * above the bottom-left pad -- is a C and a 1.00x in both voices. It also keeps
- * the surface playable in both directions: -12 semitones below it (0.50x) up to
- * +19 above (3.00x), rather than the 8.00x that reading the pads at their own
- * MIDI pitch would give. */
-static const int kJammiRootPad = kMovePadLow + kKeybedSlotSpan;
+static const int kMovePadLow   = 68; /* bottom-left pad */
+static const int kMovePadCount = 32; /* MIDI 68..99 */
+static const int kKeyboardRoot = 60; /* middle C on a keyboard: the same 1.00x */
 
-/** Where a note sits on the keybed: which octave it is above pad 68 (negative
- *  below it) and how many semitones into that octave. Any note works, so a MIDI
- *  keyboard walks the same ladder as the pads. */
-static void keybed_position(int note, int* octave, int* semitones)
-{
-    const int rel = note - kMovePadLow;
-    /* floor division, so rel = -1 is one octave DOWN and not octave 0 */
-    const int oct = (rel >= 0) ? (rel / kKeybedSlotSpan)
-                               : ((rel - (kKeybedSlotSpan - 1)) / kKeybedSlotSpan);
-    *octave = oct;
-    *semitones = rel - kKeybedSlotSpan * oct; /* 0..11, always */
-}
+/* The one file the keybed plays. The engine still names files by mode, bank
+ * and slot; the instrument does not. Every pad and every assignment uses this. */
+static const int kOneMode = 0; /* JAMMI */
+static const int kOneBank = 0;
+static const int kOneSlot = 1;
 
-/** The slot an octave of the keybed plays. One slot is one octave, so the slot
- *  travels with the OCTAVE rather than with the pad: keys 0..11 are the selected
- *  slot, 12..23 the next one up. Slot 15 is the recording buffer and is the last
- *  stop, so octaves past it sit on the buffer rather than off the end of the
- *  table. */
-static int keybed_slot(int octave, int selected_slot)
+static constexpr signed char kPadPitch[kMovePadCount] = {
+    -12, -10, -8, -7, -5, -3, -1,  0, /* C3 D3 E3 F3 G3 A3 B3 C4 */
+      0, -11, -9,  5, -6, -4, -2, 12, /* C4 C#3 D#3 F4 F#3 G#3 A#3 C5 */
+      0,   2,  4,  5,  7,  9, 11, 12, /* C4 D4 E4 F4 G4 A4 B4 C5 */
+     12,   1,  3, 17,  6,  8, 10, 24, /* C5 C#4 D#4 F5 F#4 G#4 A#4 C6 */
+};
+static_assert(sizeof(kPadPitch) == kMovePadCount, "one pitch per pad");
+
+/** Semitones from the sample's own speed. Pads use the piano table; any other
+ *  note is a keyboard, middle C at 1.00x. */
+static int keybed_pitch(int note)
 {
-    int slot = selected_slot + octave;
-    if(slot > 15)
-        slot = 15;
-    if(slot < 1)
-        slot = 1;
-    return slot;
+    if(note >= kMovePadLow && note < kMovePadLow + kMovePadCount)
+        return (int)kPadPitch[note - kMovePadLow];
+    return note - kKeyboardRoot;
 }
 
 /* chompi::g_sample_dir (the runtime sample directory) is defined in
@@ -191,17 +178,22 @@ struct ChompiInstance
      * exposes setters (and only some getters), so the slot autosave is answered
      * from here rather than by reaching into the DSP. Only touched from the
      * callback entry points. */
-    /* The instrument's non-per-slot state. The Tape page's knobs are NOT
-     * here: they are per (mode, bank, slot) and live in the engine's cache and
-     * the port's slot-value store (PORT PATCH P19), so the page can read back
-     * whichever slot is selected without a second copy to keep in sync. */
+    /* The instrument's non-per-sample state. The Tape page's knobs are NOT
+     * here: they live in the engine's cache and the port's value store (PORT
+     * PATCH P19) for the one sample the keybed plays. These numbers are also
+     * the chain_params `default`s — the host paints a missing default as the
+     * minimum, which is why Volume used to read 0 while the engine was at
+     * 0.8. Keep the two identical. */
     struct Saved
     {
-        float volume = 1.f, filter = 1.f, resonance = 0.f, saturate = 0.f;
-        float warble = 0.f, delay_time = 0.f, delay_feedback = 0.f;
+        /* Engine::Init's actual targets, not a wish. Volume is mgain_ (0.8),
+         * filter is cutoff_target_ (0.5), warble is the freq SetFreq(.1) sets,
+         * delay time is the SetDelayTime(.5) Init already applied. */
+        float volume = 0.8f, filter = 0.5f, resonance = 0.f, saturate = 0.f;
+        float warble = 0.1f, delay_time = 0.5f, delay_feedback = 0.f;
         float reverb = 0.f, final_comp = 0.f, input_gain = 1.f;
-        float looper_pitch = 1.f, looper_scrub = 0.f, looper_dub_gain = 0.f;
-        int   input_monitor = 0, octave = 0, bank = 0;
+        float looper_pitch = 1.f, looper_scrub = 0.f, looper_dub_gain = 1.f;
+        int   input_monitor = 1, octave = 0, bank = 0;
         char  input_source[8]  = "line";
         char  monitor_mode[8]  = "both";
         char  voice_mode[12]   = "jammi"; /* or "cubbi" */
@@ -434,6 +426,25 @@ static bool param_on(const char* val)
     return true;
 }
 
+/** Pin the keybed to the one sample. A restored chain, or a host that still
+ *  writes mode/bank/slot, must not put a second file under the pads. */
+static void hold_one_sample(ChompiInstance* inst)
+{
+    if(!inst)
+        return;
+    daisy::Engine& e = inst->engine;
+    if(e.GetVoiceMode() != daisy::VoiceMode::JAMMI)
+        e.SetVoiceMode(daisy::VoiceMode::JAMMI);
+    if(e.GetBank() != kOneBank)
+        e.SetBank((size_t)kOneBank);
+    if((int)e.SelectedSlot() != kOneSlot)
+        e.SelectVoiceSlot((size_t)kOneSlot);
+    inst->selected_slot = kOneSlot;
+    inst->saved.bank    = kOneBank;
+    snprintf(inst->saved.voice_mode, sizeof(inst->saved.voice_mode), "jammi");
+    e.LoadSlotValues((size_t)kOneSlot);
+}
+
 static void apply_param(ChompiInstance* inst, const char* key, const char* val)
 {
     if(!inst || !key || !val)
@@ -540,58 +551,14 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         inst->saved.octave = (int)f;
         inst->octave.store((int)f);
     }
-    else if(strcmp(key, "voice_mode") == 0)
+    else if(strcmp(key, "voice_mode") == 0 || strcmp(key, "bank") == 0
+            || strcmp(key, "slot") == 0)
     {
-        const bool cubbi = (strcmp(val, "cubbi") == 0);
-        snprintf(inst->saved.voice_mode, sizeof(inst->saved.voice_mode), "%s",
-                 cubbi ? "cubbi" : "jammi");
-        e.SetVoiceMode(cubbi ? daisy::VoiceMode::CUBBI : daisy::VoiceMode::JAMMI);
-        /* The new mode's bind happens on the next key press (P14), and every
-         * voice must take it: without this a voice that was mid-gesture keeps
-         * the previous mode's file and the pads disagree with each other. */
-        e.SetAllCopyOccurred();
-        /* Each mode carries its own values per slot (the hardware's preset
-         * store is keyed by mode too), so the Tape page has to re-read. */
-        e.LoadSlotValues(e.SelectedSlot());
-    }
-    else if(strcmp(key, "bank") == 0)
-    {
-        const size_t bank = (size_t)(f < 0.f ? 0 : (f > 4.f ? 4 : (int)f));
-        inst->saved.bank = (int)bank;
-        e.SetBank(bank);
-        /* Every slot of the new bank carries its own values: this is what makes
-         * the bank knob do something you can see on the Tape page. */
-        e.LoadSlotValues(e.SelectedSlot());
-    }
-    else if(strcmp(key, "slot") == 0)
-    {
-        /* SELECTION ONLY -- never SetVoiceSlot().
-         *
-         * This knob says which slot the Samples page is editing, and the
-         * engine's SetVoiceSlot() is a different thing: it rebinds every voice
-         * to that slot's file. Calling it here hijacked playback (the keys no
-         * longer decided their own slot) and, worse, scrolling the knob
-         * wedged the voice for good -- a burst of re-opens ends with the
-         * readers bound to a file that never finished opening, and the module
-         * stays silent until it is recreated. Keys pick their own slot through
-         * KeyToSlot(); an assignment changes the file that slot will play.
-         *
-         * JAMMI is the exception that needs the slot to travel: it plays ONE
-         * sample across the keyboard, so the knob is how you pick which one.
-         * SelectVoiceSlot() records the choice without opening anything --
-         * JAMMI's key path opens it on the next key press, once per change
-         * instead of once per knob step (PORT PATCH P14/P17). */
-        int slot = (int)f;
-        if(slot < 1)
-            slot = 1;
-        if(slot > 15)
-            slot = 15;
-        inst->selected_slot = slot;
-        e.SelectVoiceSlot((size_t)slot);
-        /* The Tape page shows the SELECTED slot's values, so every step of this
-         * knob re-reads them: on the hardware that is what the slot knob is
-         * for, and it is why bank/slot look dead when nothing re-reads. */
-        e.LoadSlotValues((size_t)slot);
+        /* Gone from the instrument. A restored chain may still write them;
+         * accepting the write and pinning back is what keeps a second sample
+         * off the keybed. Unknown-param would also be safe, and would leave
+         * an error in the channel every time an old Set loaded. */
+        hold_one_sample(inst);
     }
     else if(strcmp(key, "record") == 0)
     {
@@ -618,7 +585,14 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     else if(strcmp(key, "looper_scrub") == 0)
         e.SetLooperScrub(f);
     else if(strcmp(key, "looper_dub_gain") == 0)
-        e.IncrementLooperDubGain(f);
+    {
+        /* The host writes the knob's absolute value. IncrementDubGain adds,
+         * so the difference is what keeps the screen and the looper on the
+         * same number — a raw write of the reading would jump by the whole
+         * value on the first turn. */
+        e.IncrementLooperDubGain(f - e.GetLooperDubGain());
+        inst->saved.looper_dub_gain = e.GetLooperDubGain();
+    }
     else if(strcmp(key, "loop_clear") == 0)
     {
         /* Momentary, like sample_clear: the host writes the enum when the
@@ -654,24 +628,18 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         chompi::CanonicalSamplePath(val, canonical, sizeof(canonical));
         val = canonical;
 
-        /* The shadow UI's file browser hands us an absolute path. The map is
-         * keyed by the slot the user is editing (the `slot` param), so the
-         * flow is: pick Slot, browse, and that slot now plays that file. An
-         * empty value clears the assignment. */
-        const int mode = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
-        const int bank = e.GetBank();
-        const int slot = inst->selected_slot;
-        if(slot < 1 || slot > 14)
-        {
-            set_err(inst, "slot 15 is the recording buffer - assign to slots 1-14");
-            return;
-        }
+        /* One sample. The browser's path replaces whatever the keybed is
+         * playing — there is no slot to aim it at. An empty value clears it
+         * back to the built-in file. */
+        const int mode = kOneMode;
+        const int bank = kOneBank;
+        const int slot = kOneSlot;
         if(val[0] == '\0')
             chompi::ClearSlotOverride(mode, bank, slot);
         else
         {
             /* The browser seeds itself with the EFFECTIVE path and writes it
-             * straight back on cancel, so "assign what the slot already plays by
+             * straight back on cancel, so "assign what already plays by
              * convention" must not leave an override behind: it would pin a
              * relative name into the map, and later survive the shipped sample
              * being replaced. Anything else — including a copy of the same
@@ -697,8 +665,7 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     {
         if(!momentary_act(val))
             return;
-        const int mode = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
-        chompi::ClearSlotOverride(mode, e.GetBank(), inst->selected_slot);
+        chompi::ClearSlotOverride(kOneMode, kOneBank, kOneSlot);
         inst->map_dirty_ms.store(now_ms(), std::memory_order_release);
         inst->map_dirty.store(true);
         inst->want_scan_files.store(true);
@@ -783,81 +750,86 @@ static void apply_state_json(ChompiInstance* inst, const char* json)
     for(size_t i = 0; i < sizeof(kKeys) / sizeof(kKeys[0]); i++)
         if(json_field(json, kKeys[i], val, sizeof(val)))
             apply_param(inst, kKeys[i], val);
-    /* The selection owns the Tape page: after the mode/bank/slot above have
-     * landed, the page must be showing that slot's stored values. */
-    apply_param(inst, "voice_mode", inst->saved.voice_mode);
-    {
-        char slotbuf[16];
-        snprintf(slotbuf, sizeof slotbuf, "%d", inst->selected_slot);
-        apply_param(inst, "slot", slotbuf);
-    }
+    /* An old Set may still name a mode, bank or slot. The keybed plays one
+     * sample either way, and the Tape page shows that sample's values. */
+    hold_one_sample(inst);
 }
 
 /** JSON the shadow UI uses to build the parameter pages, and the entries the
  *  chain host turns into knob assignments. Kept as plain literals on purpose:
  *  building JSON on the callback would mean allocation. */
 static const char* kChainParams
-    = "[{\"key\":\"volume\",\"name\":\"Volume\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"filter\",\"name\":\"Filter\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"saturate\",\"name\":\"Saturate\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"warble\",\"name\":\"Warble\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"delay_feedback\",\"name\":\"Delay\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"delay_time\",\"name\":\"Dly Time\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"reverb\",\"name\":\"Reverb\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"varspeed\",\"name\":\"Varispeed\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"reverse\",\"name\":\"Reverse\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
-      "{\"key\":\"sustain\",\"name\":\"Sustain\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
-      "{\"key\":\"auto_loop\",\"name\":\"Loop\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
-      "{\"key\":\"attack\",\"name\":\"Attack\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"decay\",\"name\":\"Decay\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      /* PORT: start/end are trim points over the slot's WAV. wav_position gives
-       * them the waveform view and trim markers in the Shadow UI's edit mode
-       * (docs/MODULES.md). The host draws that from the file named by
-       * filepath_param, so nothing is asked of this plugin. */
-      "{\"key\":\"start\",\"name\":\"Start\",\"short_name\":\"STRT\",\"type\":\"wav_position\",\"mode\":\"start\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01},"
-      "{\"key\":\"end\",\"name\":\"End\",\"short_name\":\"END\",\"type\":\"wav_position\",\"mode\":\"end\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01},"
-      "{\"key\":\"gain\",\"name\":\"Gain\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"pan\",\"name\":\"Pan\",\"type\":\"float\",\"min\":0,\"max\":1},"
-      "{\"key\":\"looper_record\",\"name\":\"Loop Rec\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"]},"
-      "{\"key\":\"looper_play\",\"name\":\"Loop Play\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"]},"
-      "{\"key\":\"looper_reverse\",\"name\":\"Loop Rev\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
-      "{\"key\":\"looper_pitch\",\"name\":\"Loop Pitch\",\"type\":\"float\",\"min\":-2,\"max\":2},"
-      "{\"key\":\"looper_scrub\",\"name\":\"Scrub\",\"type\":\"float\",\"min\":-2,\"max\":2},"
-      "{\"key\":\"looper_dub_gain\",\"name\":\"Dub Gain\",\"type\":\"float\",\"min\":-1,\"max\":1},"
-      /* The sample map. `root` keeps the browser on the device user data,
-       * `start_path` opens on the Move's own sample library. No nested
-       * objects in these entries on purpose: the chain host's C-side
-       * merge walks braces and keeps only the types it models (a filepath
-       * is not a knob). */
+    = "[{\"key\":\"volume\",\"name\":\"Volume\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.8},"
+      "{\"key\":\"filter\",\"name\":\"Filter\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.5},"
+      "{\"key\":\"saturate\",\"name\":\"Saturate\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"warble\",\"name\":\"Warble\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.1},"
+      "{\"key\":\"delay_feedback\",\"name\":\"Delay\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"delay_time\",\"name\":\"Dly Time\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.5},"
+      "{\"key\":\"reverb\",\"name\":\"Reverb\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"varspeed\",\"name\":\"Varispeed\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.83},"
+      "{\"key\":\"reverse\",\"name\":\"Reverse\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":0},"
+      "{\"key\":\"sustain\",\"name\":\"Sustain\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":1},"
+      "{\"key\":\"auto_loop\",\"name\":\"Loop\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":1},"
+      "{\"key\":\"attack\",\"name\":\"Attack\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"decay\",\"name\":\"Decay\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"start\",\"name\":\"Start\",\"short_name\":\"STRT\",\"type\":\"wav_position\",\"mode\":\"start\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"end\",\"name\":\"End\",\"short_name\":\"END\",\"type\":\"wav_position\",\"mode\":\"end\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
+      "{\"key\":\"gain\",\"name\":\"Gain\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.704},"
+      "{\"key\":\"pan\",\"name\":\"Pan\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.5},"
+      "{\"key\":\"looper_record\",\"name\":\"Loop Rec\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"],\"default\":0},"
+      "{\"key\":\"looper_play\",\"name\":\"Loop Play\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"],\"default\":0},"
+      "{\"key\":\"looper_reverse\",\"name\":\"Loop Rev\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":0},"
+      "{\"key\":\"looper_pitch\",\"name\":\"Loop Pitch\",\"type\":\"float\",\"min\":-2,\"max\":2,\"step\":0.01,\"default\":1},"
+      "{\"key\":\"looper_scrub\",\"name\":\"Scrub\",\"type\":\"float\",\"min\":-2,\"max\":2,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"looper_dub_gain\",\"name\":\"Dub Gain\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
       "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
-      "{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},"
-      "{\"key\":\"record\",\"name\":\"Chompi Rec\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
-      "{\"key\":\"input_monitor\",\"name\":\"Monitor\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
-      "{\"key\":\"input_gain\",\"name\":\"In Gain\",\"type\":\"float\",\"min\":0,\"max\":2},"
-      "{\"key\":\"input_source\",\"name\":\"Input\",\"type\":\"enum\",\"options\":[\"line\",\"mic\"]},"
-      "{\"key\":\"voice_mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"jammi\",\"cubbi\"]},"
-      "{\"key\":\"bank\",\"name\":\"Bank\",\"type\":\"int\",\"min\":0,\"max\":4},"
-      "{\"key\":\"slot\",\"name\":\"Slot (1 octave)\",\"type\":\"int\",\"min\":1,\"max\":15},"
-      "{\"key\":\"octave\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-2,\"max\":2},{\"key\":\"loop_clear\",\"name\":\"Clear Loop\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},{\"key\":\"fx_pre_loop\",\"name\":\"FX Route\",\"type\":\"enum\",\"options\":[\"pre\",\"post\"]}]";
+      "{\"key\":\"sample_clear\",\"name\":\"Clear\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"],\"default\":0},"
+      "{\"key\":\"record\",\"name\":\"Chompi Rec\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":0},"
+      "{\"key\":\"input_monitor\",\"name\":\"Monitor\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":1},"
+      "{\"key\":\"input_gain\",\"name\":\"In Gain\",\"type\":\"float\",\"min\":0,\"max\":2,\"step\":0.01,\"default\":1},"
+      "{\"key\":\"input_source\",\"name\":\"Input\",\"type\":\"enum\",\"options\":[\"line\",\"mic\"],\"default\":0},"
+      "{\"key\":\"octave\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-2,\"max\":2,\"step\":1,\"default\":0},"
+      "{\"key\":\"loop_clear\",\"name\":\"Clear Loop\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"],\"default\":0},"
+      "{\"key\":\"fx_pre_loop\",\"name\":\"FX Route\",\"type\":\"enum\",\"options\":[\"pre\",\"post\"],\"default\":0}]";
 
 static const char* kUiHierarchy
-    = "{\"levels\":{\"root\":{\"label\":\"CHOMPI\",\"params\":["
-      "{\"key\":\"volume\"},{\"key\":\"filter\"},{\"key\":\"saturate\"},{\"key\":\"warble\"},"
-      "{\"key\":\"delay_feedback\"},{\"key\":\"delay_time\"},{\"key\":\"reverb\"},{\"key\":\"varspeed\"},"
-      "{\"level\":\"samples\",\"label\":\"Samples (1 slot = 1 octave)\"},{\"level\":\"tape\",\"label\":\"Tape\"},{\"level\":\"looper\",\"label\":\"Looper\"},"
-      "{\"level\":\"recorder\",\"label\":\"Recorder\"},{\"level\":\"setup\",\"label\":\"Setup\"}],"
-      "\"knobs\":[\"volume\",\"filter\",\"saturate\",\"warble\",\"delay_feedback\",\"delay_time\",\"reverb\",\"varspeed\"]},"
-      "\"tape\":{\"label\":\"Tape\",\"params\":[{\"key\":\"reverse\"},{\"key\":\"sustain\"},{\"key\":\"auto_loop\"},"
-      "{\"key\":\"attack\"},{\"key\":\"decay\"},{\"key\":\"start\"},{\"key\":\"end\"},{\"key\":\"gain\"},{\"key\":\"pan\"}],"
-      "\"knobs\":[\"reverse\",\"sustain\",\"attack\",\"decay\",\"start\",\"end\",\"gain\",\"pan\"]},"
-      "\"looper\":{\"label\":\"Looper\",\"params\":[{\"key\":\"looper_record\"},{\"key\":\"looper_play\"},"
-      "{\"key\":\"looper_reverse\"},{\"key\":\"looper_pitch\"},{\"key\":\"looper_scrub\"},{\"key\":\"looper_dub_gain\"},{\"key\":\"loop_clear\"}],"
-      "\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\"]},"
-      "\"recorder\":{\"label\":\"Recorder\",\"params\":[{\"key\":\"record\"},{\"key\":\"input_monitor\"},"
-      "{\"key\":\"input_gain\"},{\"key\":\"input_source\"}],"
-      "\"knobs\":[\"record\",\"input_monitor\",\"input_gain\",\"input_source\"]},"
-      "\"setup\":{\"label\":\"Setup\",\"params\":[{\"key\":\"voice_mode\"},{\"key\":\"bank\"},{\"key\":\"slot\"},"
-      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples (1 slot = 1 octave)\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot (1 octave)\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":1,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
+    = "{\"levels\":{\"root\":{\"label\":\"CHOMPI\",\"params\":[{\"key\":\"volume\"},"
+      "{\"key\":\"filter\"},"
+      "{\"key\":\"saturate\"},"
+      "{\"key\":\"warble\"},"
+      "{\"key\":\"delay_feedback\"},"
+      "{\"key\":\"delay_time\"},"
+      "{\"key\":\"reverb\"},"
+      "{\"key\":\"varspeed\"},"
+      "{\"level\":\"samples\",\"label\":\"Samples\"},"
+      "{\"level\":\"tape\",\"label\":\"Tape\"},"
+      "{\"level\":\"looper\",\"label\":\"Looper\"},"
+      "{\"level\":\"recorder\",\"label\":\"Recorder\"},"
+      "{\"level\":\"setup\",\"label\":\"Setup\"}],\"knobs\":[\"volume\",\"filter\",\"saturate\",\"warble\",\"delay_feedback\",\"delay_time\",\"reverb\",\"varspeed\"]},"
+      "\"tape\":{\"label\":\"Tape\",\"params\":[{\"key\":\"reverse\"},"
+      "{\"key\":\"sustain\"},"
+      "{\"key\":\"auto_loop\"},"
+      "{\"key\":\"attack\"},"
+      "{\"key\":\"decay\"},"
+      "{\"key\":\"start\"},"
+      "{\"key\":\"end\"},"
+      "{\"key\":\"gain\"},"
+      "{\"key\":\"pan\"}],\"knobs\":[\"reverse\",\"sustain\",\"attack\",\"decay\",\"start\",\"end\",\"gain\",\"pan\"]},"
+      "\"looper\":{\"label\":\"Looper\",\"params\":[{\"key\":\"looper_record\"},"
+      "{\"key\":\"looper_play\"},"
+      "{\"key\":\"looper_reverse\"},"
+      "{\"key\":\"looper_pitch\"},"
+      "{\"key\":\"looper_scrub\"},"
+      "{\"key\":\"looper_dub_gain\"},"
+      "{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\"]},"
+      "\"recorder\":{\"label\":\"Recorder\",\"params\":[{\"key\":\"record\"},"
+      "{\"key\":\"input_monitor\"},"
+      "{\"key\":\"input_gain\"},"
+      "{\"key\":\"input_source\"}],\"knobs\":[\"record\",\"input_monitor\",\"input_gain\",\"input_source\"]},"
+      "\"setup\":{\"label\":\"Setup\",\"params\":[{\"key\":\"octave\"},"
+      "{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"octave\",\"fx_pre_loop\"]},"
+      "\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
+      "{\"key\":\"sample_clear\",\"name\":\"Clear\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"],\"default\":0}],\"knobs\":[\"sample_clear\"]}}}";
 
 // ---------------------------------------------------------------- plugin API
 
@@ -920,21 +892,36 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
                       daisy::MonitorMode::BOTH);
     /* CHOMPI's "send/return" monitor modes only make sense with its separate
      * headphone and line outs. Move has one output, so the module runs the
-     * BOTH topology: the input is always in the mix and always recorded. */
+     * BOTH topology and the monitor starts on — the same thing the Monitor
+     * knob shows (chain_params default 1, saved.input_monitor). */
     inst->engine.SetInputMonitor(true);
-    inst->engine.SetInputGain(1.f);
     inst->engine.FillDefaultSample((float)MOVE_SAMPLE_RATE);
     inst->engine.SetVoiceMode(daisy::VoiceMode::JAMMI);
     inst->engine.SetBank(0);
-    /* Slot 1, not 15. Slot 15 is the recording buffer, whose contents are the
-     * decaying test tone FillDefaultSample() writes -- with 15 selected, a
-     * fresh module could only ever play that one sound, in every mode and bank,
-     * until the user found the Samples page. Slot 1 is the first sound of the
-     * selected mode's bank, so the mode/bank/slot knobs do something audible
-     * from the start (see PORT PATCH P14 for JAMMI's bind). */
-    inst->engine.SetVoiceSlot(1, false);
+    /* One sample, slot 1 — not 15. Slot 15 is the recording buffer (the
+     * decaying test tone FillDefaultSample writes). The keybed never pages
+     * to another slot. */
+    inst->engine.SetVoiceSlot(kOneSlot, false);
     inst->engine.SetInputSource(daisy::InputSource::LINE_IN);
     inst->engine.SetGain(1.f);
+    /* Push the mirror into the engine. Init leaves delay-feedback and reverb
+     * targets unset, and a few targets (volume 0.8, filter 0.5, warble 0.1,
+     * delay time 0.5) that the old mirror did not report. These are the same
+     * numbers chain_params `default` advertises, so a host that writes defaults
+     * on load does not move the sound, and a host that paints `default` shows
+     * what is actually playing. */
+    inst->engine.SetMainGain(inst->saved.volume);
+    inst->engine.SetFilter(inst->saved.filter);
+    inst->engine.SetFilterResonance(inst->saved.resonance);
+    inst->engine.SetSaturate(inst->saved.saturate);
+    inst->engine.SetWarble(inst->saved.warble);
+    inst->engine.SetDelayTime(inst->saved.delay_time);
+    inst->engine.SetDelayFeedback(inst->saved.delay_feedback);
+    inst->engine.SetReverb(inst->saved.reverb);
+    inst->engine.SetFinalComp(inst->saved.final_comp);
+    inst->engine.SetInputGain(inst->saved.input_gain);
+    inst->engine.SetLooperPitch(inst->saved.looper_pitch);
+    inst->engine.SetLooperScrub(0.f);
 
     /* The per-slot values (pitch, start/end, attack/decay, loop, sustain, gain,
      * pan) are read from the store on every selection change and every key
@@ -972,9 +959,9 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
     }
     inst->values_written = inst->values_saved = chompi::SlotValuesWriteCount();
 
-    /* What the selected slot holds, as the engine's cache: the page reads it,
+    /* The one sample's values, as the engine's cache: the Tape page reads it,
      * and the first key press applies it. */
-    inst->engine.LoadSlotValues(inst->engine.SelectedSlot());
+    hold_one_sample(inst);
 
     inst->want_scan_files.store(true);
 
@@ -1076,49 +1063,24 @@ static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)
     {
         /* d1 is the note, d2 the velocity — a distinction worth stating out
          * loud, because reading d2 here is exactly the bug this line had. */
-        int key_octave = 0, semitones = 0;
-        keybed_position(d1, &key_octave, &semitones);
+        /* A restored chain can still have moved the engine onto another file.
+         * Correct that before the note, not on every note: hold_one_sample
+         * reloads the tape page, and a press that did not need it should not. */
+        if(e.GetVoiceMode() != daisy::VoiceMode::JAMMI || e.GetBank() != kOneBank
+           || (int)e.SelectedSlot() != kOneSlot)
+            hold_one_sample(inst);
 
-        const bool cubbi = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI);
-        const int  octave = inst->octave.load();
-
-        /* What the key plays.
-         *
-         * CUBBI: the key's OCTAVE picks the slot and its place in that octave
-         * picks the pitch (PORT PATCH P22) -- one slot is one octave, so the
-         * slot travels with the note instead of the engine looking the key up
-         * in KeyToSlot(). The semitone is what the engine's own
-         * MidiNoteToPlaybackRatio() turns into a playback ratio, exactly as
-         * JAMMI does with the note.
-         *
-         * JAMMI: one sample for the whole keybed, so there is no slot to pick
-         * and only the pitch, measured from pad 80 (the sample's own speed, as
-         * CHOMPI's own middle C is on the hardware). Every pad therefore sounds
-         * in both modes: this is a chromatic ladder, eight pads to a row, not a
-         * piano with keys missing.
-         *
-         * The slot's own values are loaded by the engine's key path, one press
-         * at a time (PORT PATCH P19).
-         *
-         * PORT PATCH P20 kept this from calling SetVoiceSlot(slot, false) on
-         * every press: that bound the slot's file to EVERY voice, so a press
-         * re-pointed voices that were mid-note at a file that had not finished
-         * opening, and a pad whose slot had no file took the whole keybed
-         * silent. */
-        const int slot = cubbi ? keybed_slot(key_octave, inst->selected_slot) : 0;
-        const int pitch = (cubbi ? semitones                     /* 0..11 */
-                                 : (d1 - kJammiRootPad)          /* -12..19 */
-                          ) + 12 * octave;
+        /* One sample, pitched by the pad. slot_hint 0: JAMMI's key path plays
+         * voice_slot_ (pinned to kOneSlot) and turns this semitone count into
+         * a playback ratio. The identity is the note the host sent, unique per
+         * pad, so a release still finds the voice if the octave knob moved. */
+        const int pitch = keybed_pitch((int)d1) + 12 * inst->octave.load();
 
         e.request_fifo.PushBack(daisy::KeyRequest(daisy::KeyRequest::Type::START,
                                                   (float)pitch,
-                                                  /* identity: the note the host
-                                                   * sent, which is unique per
-                                                   * pad and cannot collide with
-                                                   * an octave shift */
                                                   (int)d1,
                                                   (float)d2 /* velocity */,
-                                                  slot));
+                                                  0));
     }
     else if(status == 0x80 || (status == 0x90 && d2 == 0))
     {
@@ -1154,12 +1116,10 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         /* A sound generator's hierarchy must be served here — the chain host
          * never reads module.json for one.
          *
-         * pad_layout says what the SURFACE is, and said "drums" for CUBBI back
-         * when a pad was a slot (one sample per pad, a drum rack). PORT PATCH
-         * P22 turns CUBBI into a keyboard too — one slot per octave, pitched by
-         * the key — and JAMMI always was one, so both modes answer
-         * "chromatic" now. Nothing may infer a layout from the notes a module
-         * declares, so saying it is the only way to be understood. */
+         * pad_layout stays "chromatic" so the host delivers pads as MIDI 68..99
+         * in order. The piano is this module's map (keybed_pitch), not the
+         * host's: "drums" would reseat the pads, and there is no "piano" value
+         * the host understands. */
         const size_t prefix = (size_t)snprintf(buf, (size_t)buf_len,
                                               "{\"pad_layout\":\"chromatic\"");
         if(prefix + 1 >= (size_t)buf_len)
@@ -1171,11 +1131,11 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     }
     if(strcmp(key, "state") == 0)
     {
-        /* The Tape page's values are NOT in here: they are per (mode, bank,
-         * slot) and live in the module's own store (slots.values, next to
-         * samples.map), which the host has no way to keep per Set. What the
-         * state has to carry is which slot is selected, so restoring a Set puts
-         * the page back on the same slot it was saved on. */
+        /* The Tape page's values are NOT in here: they belong to the one
+         * sample and live in the module's own store (slots.values, next to
+         * samples.map), which the host has no way to keep per Set. mode, bank
+         * and slot are emitted as the pinned instrument so an old reader still
+         * parses; restoring them cannot put a second sample on the keybed. */
         const ChompiInstance::Saved& v = inst->saved;
         const int n = snprintf(buf, (size_t)buf_len,
             "{\"volume\":%.4f,\"filter\":%.4f,\"resonance\":%.4f,\"saturate\":%.4f,"
@@ -1253,7 +1213,7 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     if(strcmp(key, "looper_scrub") == 0)
         return snprintf(buf, buf_len, "%.4f", inst->saved.looper_scrub);
     if(strcmp(key, "looper_dub_gain") == 0)
-        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_dub_gain);
+        return snprintf(buf, buf_len, "%.4f", inst->engine.GetLooperDubGain());
     /* Momentary actions have no state to report, and the idle option is the
      * honest answer: the host then reads "not triggered" and writes the other
      * option when the user picks it. */
@@ -1288,14 +1248,12 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%s", chompi::g_sample_dir);
     if(strcmp(key, "sample_file") == 0)
     {
-        /* What the selected slot plays right now — the assigned sample if
-         * there is one, otherwise the convention name. The host reads this
-         * back to seed the browser (and to draw the wav_position waveform),
-         * so it must be the EFFECTIVE path, not the assignment. */
-        const int mode = (inst->engine.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
-        char      path[chompi::kSlotPathMax];
-        chompi::SlotSamplePath(mode, inst->engine.GetBank(), inst->selected_slot,
-                               false, path, sizeof(path));
+        /* The one sample the keybed plays — the assigned file if there is
+         * one, otherwise the convention name. The host reads this back to
+         * seed the browser (and to draw the wav_position waveform), so it
+         * must be the EFFECTIVE path, not the assignment. */
+        char path[chompi::kSlotPathMax];
+        chompi::SlotSamplePath(kOneMode, kOneBank, kOneSlot, false, path, sizeof(path));
         /* …and through the portal, so the browser opens on the file's own
          * folder inside its root, and the cell reads "Built-in/…" instead of the
          * whole install path. */
@@ -1305,13 +1263,13 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     }
     /* --- the parameter pages, read back -----------------------------------
      *
-     * Every knob on every page answers with the value it is actually set to.
-     * The host draws a knob's position and its "edited" marker from whatever
-     * this returns, so a key that is missing (they all were, except the root
-     * page and the samples page) shows up as 0 — which is exactly the report:
-     * "Volume is set at 0 when you first start the module but is actually at
-     * full". The values live in the mirror (ChompiInstance::Saved), which is
-     * also what `state` saves, so the two cannot disagree.
+     * Every knob answers with the value the engine is actually using. That
+     * is also the chain_params `default` at startup: the host paints a
+     * missing default as the parameter's minimum, which is why Volume read 0
+     * while the sound was at 0.8, and why a bipolar knob (Loop Pitch, Scrub,
+     * Octave) read its minimum instead of where it sat. The mirror
+     * (ChompiInstance::Saved) is what `state` saves, so the two cannot
+     * disagree.
      *
      * Enums answer with the option NAME: the host matches the string against
      * the parameter's `options` to choose the displayed entry, and a bare "1"
@@ -1326,10 +1284,11 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return chompi::DescribePortal(buf, (size_t)buf_len);
     if(strcmp(key, "sample_map") == 0)
     {
-        /* Diagnostic: the assignments for the current mode/bank, as
-         * "slot=path;" pairs. Empty when everything uses convention names. */
-        const int mode  = (inst->engine.GetVoiceMode() == daisy::VoiceMode::CUBBI) ? 1 : 0;
-        const int bank  = inst->engine.GetBank();
+        /* Diagnostic: the one sample's assignment, as "1=path;". Empty when
+         * it still uses the convention name. Mode and bank are the pinned
+         * instrument, not whatever a restored chain last wrote. */
+        const int mode  = kOneMode;
+        const int bank  = kOneBank;
         int       off   = 0;
         for(int slot = 1; slot <= 14 && off < (int)buf_len - 1; slot++)
         {

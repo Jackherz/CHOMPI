@@ -193,15 +193,12 @@ tried.
 
 In order, each step isolates one subsystem:
 
-1. **Sample playback**: pads → CUBBI samples. The pads are a **chromatic
-   keybed** read left to right and bottom to top, and **one slot is one
-   octave** — twelve pads. With `slot` = 1: pad 68 (bottom-left) is slot 1's C,
-   pads 68–79 are slot 1 (C up to B), pads 80–91 are slot 2, pads 92–99 the
-   first eight of slot 3. Every pad sounds; the octave's C plays the sample at
-   its own speed, the B above it at 1.89×. The `slot` knob pages that window
-   (slot 5 → slots 5, 6 and the start of 7), and `octave` transposes the whole
-   keybed. So: assign a file to slot 3, and slot 3 must be playable over a whole
-   octave of pads, at the pitches above.
+1. **Sample playback**: one sample, every pad. The pads are a piano — white
+   keys on rows 1 and 3, black keys (the sharps) on rows 2 and 4, one column
+   to the right of the white they split. The C at the end of row 1 plays the
+   sample at its own speed. The three pads a piano leaves empty (above C,
+   above F, and above the octave C) are not silent: each plays the white key
+   below it, one octave higher. `octave` transposes the whole keyboard.
 2. **Streaming under a load spike**: hold several keys in a row and listen for
    dropouts. This is the untested bit — on real hardware the reads contend
    with whatever else touches the filesystem. If you hear clicks, the fix is
@@ -215,14 +212,10 @@ In order, each step isolates one subsystem:
    Then **clear it**: the Looper page's `Clear Loop` cell. It is a tape stop —
    the loop winds down over about a second and then stays silent; recording
    again afterwards must make a fresh loop (not a dub of the cleared one).
-5. **Mode / bank / slot** (Setup page): with the full card set deployed, in
-   **CUBBI** the first twelve pads play the selected slot and the next twelve
-   the slot above it, and the `bank` knob changes both (bank b's bottom-left pad
-   sounds different from bank a's). In **JAMMI** every pad plays the *selected*
-   slot, pitched from pad 80 (that pad is the sample's own speed): move `slot`
-   and press a pad, then move `bank` and press again — each press plays the
-   newly selected sample, and `slot` 15 plays CHOMPI's built-in buffer. Switching
-   JAMMI → CUBBI → JAMMI mid-phrase must not leave the module silent.
+5. **One sample** (Samples page): pick a file. Every pad plays that file,
+   pitched by the piano map above. There is no slot, bank or mode knob — a
+   second file is not on the keybed until you pick it. On load, every knob
+   shows the value the sound is at (Volume 0.80, not 0).
 6. **FX route** (Setup page, `FX Route`): set a long delay
    (`delay_time` up, `delay_feedback` up), record a short loop in `pre`, then
    listen back with `delay_feedback` at zero — the delay's tail is *in* the
@@ -242,7 +235,7 @@ In order, each step isolates one subsystem:
 
 ## 4. Sample import
 
-Assign any WAV on the Move to any key, and it sticks across a power cycle.
+Pick a WAV on the Move and the whole keybed plays it. The pick sticks across a power cycle.
 
 ```sh
 cd ~/CHOMPI/schwung-chompi
@@ -251,9 +244,7 @@ make deploy ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
 
 Then, with the chain loaded, open the module's editor and go to **Samples**:
 
-1. `SLOT` → the slot you want to change (1–14; slot 15 is the recorder's
-   buffer and is refused on purpose).
-2. `SMPL` → the browser opens inside the **sample portal**,
+1. `SMPL` → the browser opens inside the **sample portal**,
    `/data/UserData/chompi-samples`, which holds two entries:
 
    * `[Built-in]` — the card set that ships with the module
@@ -265,18 +256,16 @@ Then, with the chain loaded, open the module's editor and go to **Samples**:
    If `[User Library]` is missing, the directory above does not exist on the
    device — create it, then reopen the module (or `make deploy`, which creates
    the portal and the symlinks for you). `debug_portal` reports both links.
-3. Jog through the list — the slot follows the highlighted file (live
+2. Jog through the list — the keybed follows the highlighted file (live
    preview), so you hear each one before you commit. Click to commit, back out
-   to cancel. If you delete or rename an assigned file afterwards, that key
-   goes silent and everything else keeps playing — the assignment is kept, so
-   only that slot is affected.
-4. Play the pads for that slot: the first twelve pads (bottom-left C, then
-   up the chromatic ladder) are the slot you selected, and the whole octave
-   plays your file — C at its own speed, the pads above it higher. The next
-   twelve pads are the next slot up; move `slot` to put a second file there.
-5. `STRT` / `END` now trim *that* file and the pads draw its waveform.
-6. `CLR` returns the slot to the shipped `samples/cubbi_aN.wav`.
-7. Power-cycle and reload the Set: your assignment is still there.
+   to cancel.
+3. Play the pads. Every pad plays that one file, as a piano: white keys on
+   rows 1 and 3, black keys on rows 2 and 4. The C at the end of row 1 is the
+   sample at its own speed. There is no second sample on the keybed.
+4. `STRT` / `END` trim that file and the pads draw its waveform.
+5. `CLR` returns the keybed to the shipped sample.
+6. Power-cycle and reload the Set: your assignment is still there, and every
+   knob still shows the value the sound is at (Volume 0.80, not 0).
 
 If you want the whole loop without a Move:
 

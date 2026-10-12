@@ -479,8 +479,8 @@ int main(int argc, char** argv)
     check_text ("Reverse starts off",           "reverse",    "Off");
     check_text ("Loop starts on",               "auto_loop",  "On");
     check_text ("Sustain starts on",            "sustain",    "On");
-    check_close("Volume starts at full",        "volume",     1.0,   1e-3);
-    check_close("Filter starts open",           "filter",     1.0,   1e-3);
+    check_close("Volume starts at the engine's 0.8", "volume",  0.8,   1e-3);
+    check_close("Filter starts at the engine's 0.5", "filter",  0.5,   1e-3);
     check_close("Bank starts at 0",             "bank",       0.0,   1e-3);
     check_close("Slot starts at 1",             "slot",       1.0,   1e-3);
     check_text ("Mode starts at jammi",         "voice_mode", "jammi");
@@ -489,42 +489,27 @@ int main(int argc, char** argv)
     set("sample_dir", g_dir);
     usleep(200 * 1000);
 
-    /* --- 2. the values belong to a slot (item 3) ------------------------- */
-    printf("\n--- a slot's values are its own ---------------------------------\n");
+    /* --- 2. one sample: slot/bank do not page the tape knobs -------------- */
+    printf("\n--- one sample: slot and bank do not change the tape page -------\n");
     bind_slot("jammi", "0", "1", g_long);
 
     set("attack", "0.50");
     set("decay",  "0.30");
     set("gain",   "0.20");
     sleep_ms(200);
-    check_close("Slot 1 keeps the attack that was set", "attack", 0.50, 1e-3);
+    check_close("The sample keeps the attack that was set", "attack", 0.50, 1e-3);
 
     set("slot", "2");
+    set("bank", "1");
+    set("voice_mode", "cubbi");
     sleep_ms(200);
-    check_close("Slot 2 starts from the default attack", "attack", 0.0,   1e-3);
-    check_close("Slot 2 starts from the default gain",   "gain",   0.704, 1e-3);
-    /* A knob on slot 2 must leave slot 2's OTHER values alone: an end point
-     * that defaulted to 0 would make slot 2 play an empty region of its file. */
+    check_close("Slot/bank/mode leave the attack alone", "attack", 0.50, 1e-3);
+    check_close("...and the gain",                       "gain",   0.20, 1e-3);
+    check_close("...and the end point",                  "end",    1.0,  1e-3);
     set("decay", "0.25");
     sleep_ms(200);
-    check_close("Slot 2's end point is still 1 after a decay edit", "end",   1.0, 1e-3);
-    check_close("Slot 2's start point is still 0",                  "start", 0.0, 1e-3);
-
-    set("slot", "1");
-    sleep_ms(200);
-    check_close("Slot 1 still holds its attack", "attack", 0.50, 1e-3);
-    check_close("Slot 1 still holds its gain",   "gain",   0.20, 1e-3);
-    check_close("Slot 1's end point is still 1", "end",    1.0,  1e-3);
-
-    set("bank", "1");
-    sleep_ms(200);
-    check_close("Another bank's slot 1 is untouched", "attack", 0.0, 1e-3);
-
-    set("bank", "0");
-    set("slot", "1");
-    sleep_ms(200);
-    check_close("Back in bank 0, slot 1 has its values", "attack", 0.50, 1e-3);
-    check_close("...and switching slots changed what the page shows", "gain", 0.20, 1e-3);
+    check_close("A decay edit still lands on the one sample", "decay", 0.25, 1e-3);
+    check_close("and does not zero the start point",          "start", 0.0,  1e-3);
 
     /* --- 3. Attack and Decay, independent, in both modes (item 4) -------- */
     for(int mode = 0; mode < 2; mode++)
@@ -572,31 +557,25 @@ int main(int argc, char** argv)
               c0_tail < 0.15 && c75_tail > 0.40);
     }
 
-    /* --- 4. CUBBI: each pad uses its own slot's values (item 3) ---------- */
-    printf("\n--- CUBBI: each pad uses its own slot's values ------------------\n");
+    /* --- 4. every pad uses the one sample's envelope --------------------- */
+    printf("\n--- every pad uses the one sample's envelope --------------------\n");
     new_instance();
-    bind_slot("cubbi", "0", "1", g_long);
+    bind_slot("jammi", "0", "1", g_long);
     reset_page();
-    set("attack", "0.75"); /* slot 1: a slow fade */
-    sleep_ms(200);
-    bind_slot("cubbi", "0", "2", g_long);
-    reset_page();
-    set("attack", "0"); /* slot 2: instant */
+    set("attack", "0.75");
     sleep_ms(600);
 
     Reading pad1{}, pad2{}, pad1b{};
-    set("slot", "1"); /* the octave the pads show starts at slot 1 */
-    sleep_ms(300);
     press(kPadOfSelectedSlot, &pad1);
-    print_reading("pad 1 (slot 1, attack 0.75)", pad1);
+    print_reading("pad 68 (attack 0.75)", pad1);
     press(kPadOfNextSlot, &pad2);
-    print_reading("pad 2 (slot 2, attack 0.00)", pad2);
+    print_reading("pad 80 (same sample)", pad2);
     press(kPadOfSelectedSlot, &pad1b);
-    print_reading("pad 1 again", pad1b);
-    check("CUBBI: pad 1 fades in, pad 2 does not",
+    print_reading("pad 68 again", pad1b);
+    check("both pads fade in — one sample, one envelope",
           pad1.peak > 0.01 && pad1.early / pad1.peak < 0.45
-          && pad2.peak > 0.01 && pad2.early / pad2.peak > 0.55);
-    check("CUBBI: pad 1 still fades in on a later press (not a one-off)",
+          && pad2.peak > 0.01 && pad2.early / pad2.peak < 0.45);
+    check("the fade is still there on a later press",
           pad1b.peak > 0.01 && pad1b.early / pad1b.peak < 0.45);
 
     /* --- 5. Loop and Sustain, on a 0.30 s file (item 1) ------------------ */
@@ -682,8 +661,9 @@ int main(int argc, char** argv)
         api->set_param(inst2, "slot", "8");
         sleep_ms(250);
         api->get_param(inst2, "attack", rd, sizeof rd);
-        snprintf(label, sizeof label, "Untouched slot 8 is still at the default (%.4s)", rd);
-        check(label, fabs(strtod(rd, nullptr) - 0.0) <= 2e-3);
+        snprintf(label, sizeof label, "Writing slot does not page the tape knobs (%.3f)",
+                 strtod(rd, nullptr));
+        check(label, fabs(strtod(rd, nullptr) - 0.40) <= 2e-3);
         api->destroy_instance(inst2);
     }
 

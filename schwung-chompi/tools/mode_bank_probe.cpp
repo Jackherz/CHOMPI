@@ -1,9 +1,8 @@
-/* mode_bank_probe — what do voice_mode, bank and slot actually change?
+/* mode_bank_probe — voice_mode, bank and slot must not change the sample.
  *
- * The device report was "changing the mode from jammi to cubbi makes the sound
- * disappear, and bank/slot do nothing in either mode". Those three params are
- * supposed to be the heart of the instrument, so this measures them instead of
- * arguing about them.
+ * One sample (jammi_a1) covers the whole piano. Writing cubbi, another bank
+ * or another slot must leave pad 75 on that file. The other tones exist so a
+ * switch would be audible as the wrong frequency.
  *
  * It needs a sample directory whose files are labelled BY FREQUENCY, so the
  * spectrum says which file played:
@@ -194,81 +193,21 @@ int main(int argc, char** argv)
      * The external-note presses this used to do (MIDI 48/50/52) are not the
      * device's pads at all - they fall back to a chromatic reading, which is a
      * different (and separately probed) path. */
-    printf("--- CUBBI: one slot per octave of the pads -------------------------\n");
+    /* One sample (jammi_a1, 840 Hz → 771.75 at 44.1 kHz). Pad 75 is 1.00x.
+     * Mode, bank and slot must not switch the file. */
+    const double one = 840.0 * 44100.0 / 48000.0;
+    printf("--- one sample on the piano; mode/bank/slot must not switch it ----\n");
+    press_note("pad 75, C at 1.00x (jammi_a1)", 75, one);
+    press_note("pad 68, that C an octave down", 68, one * 0.5);
+    press_note("pad 77, C# black key", 77, one * pow(2.0, -11.0 / 12.0));
     set("voice_mode", "cubbi");
-    settle_ms(800);
-    set("slot", "1");
-    settle_ms(600);
-    press_note("cubbi slot 1, bottom-left pad (slot 1: 440)", 68, 404.25);
-    press_note("cubbi slot 1, pad G (+7 st)", 75, 404.25 * 1.4983);
-    press_note("cubbi slot 2, pad 80 (480)", 80, 441.00);
-    press_note("cubbi slot 2, pad G (+7 st)", 87, 441.00 * 1.4983);
-    set("slot", "3");
-    settle_ms(600);
-    press_note("cubbi slot 3, pad 68 (520)", 68, 477.75);
-    press_note("cubbi slot 4, pad 80 (560)", 80, 514.50);
-
-    printf("\n--- bank changes which set the pads play ---------------------------\n");
     set("bank", "1");
-    set("slot", "1");
+    set("slot", "5");
     settle_ms(800);
-    press_note("cubbi bank b, pad 68 (bank b slot 1: 640)", 68, 588.00);
-    press_note("cubbi bank b, pad 80 (bank b slot 2: 680)", 80, 624.75);
-    set("bank", "0");
-    settle_ms(800);
-    press_note("cubbi bank a again, pad 68 (440)", 68, 404.25);
-
-    printf("\n--- JAMMI: one sample, played chromatically -----------------------\n");
-    set("voice_mode", "jammi");
-    settle_ms(800);
-    set("slot", "1");
-    settle_ms(800);
-    /* JAMMI's own speed is pad 80 (PORT PATCH P22), so that pad is the 840 Hz
-     * file at the 0.919x of the rate mismatch, and four pads up is a major
-     * third (x1.2599). */
-    press_note("jammi slot 1 (840), pad 80", 80, 771.75);
-    press_note("jammi slot 1 (840), pad 84 (x1.2599)", 84, 771.75 * 1.2599);
-    set("slot", "2");
-    settle_ms(800);
-    press_note("jammi slot 2 (880), pad 80", 80, 808.50);
-    set("slot", "3");
-    settle_ms(800);
-    press_note("jammi slot 3 (920), pad 80", 80, 845.25);
-    /* Bank b's set in this tone directory only has slot 1, so select it before
-     * switching banks -- the same thing a user does. */
-    set("slot", "1");
-    set("bank", "1");
-    settle_ms(800);
-    press_note("jammi bank b slot 1 (1000), pad 80", 80, 918.75);
-
-    printf("\n--- slot 15 is the recording buffer, not a file -------------------\n");
-    /* Slot 15 plays CHOMPI's built-in RAM buffer (a decaying tone at 523 Hz, so
-     * half speed twelve pads below the JAMMI root). What matters here is the
-     * bookkeeping: the voice must know it is on the buffer, or moving back to a
-     * card slot leaves it reading the wrong thing forever. */
-    set("slot", "15");
-    settle_ms(600);
-    /* FillDefaultSample() writes its tone with a .5 factor -- 261.6 Hz at the
-     * buffer's rate -- so the pad an octave below the root (x0.5) lands at
-     * 130.8, not 261. */
-    press_note("jammi slot 15 (RAM buffer), pad 68", 68, 130.8);
-    check("the voice reads the RAM buffer on slot 15", strstr(dbg(), "ram1 slot15") != nullptr,
-          "(debug_voice)");
-    set("slot", "1");
-    settle_ms(600);
-    /* Still in bank b from the section above, so slot 1 is jammi_b1 (1000 Hz). */
-    press_note("back to slot 1 (bank b: 1000), pad 80", 80, 918.75);
-    check("and reads the card sample again on slot 1", strstr(dbg(), "ram0 slot1") != nullptr,
-          "(debug_voice)");
-
-    printf("\n--- back to cubbi, and the slot knob the samples page uses --------\n");
-    set("voice_mode", "cubbi");
-    settle_ms(800);
-    set("bank", "0");
-    settle_ms(800);
-    set("slot", "3");
-    settle_ms(600);
-    press_note("cubbi bank a, pad 68  (slot 3: 520)", 68, 477.75);
+    press_note("after cubbi / bank 1 / slot 5, still jammi_a1", 75, one);
+    press_note("and the black key is still that file", 77, one * pow(2.0, -11.0 / 12.0));
+    check("voice stays on the card sample, slot 1", strstr(dbg(), "ram0 slot1") != nullptr,
+          dbg());
     printf("\n%s (%d failure%s in %d checks)\n", failures ? "VERDICT: FAIL" : "VERDICT: PASS",
            failures, failures == 1 ? "" : "s", checks);
     return failures ? 1 : 0;

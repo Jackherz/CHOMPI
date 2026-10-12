@@ -269,8 +269,8 @@ int main(int argc, char** argv)
      * so "assign what the slot already plays by convention" has to be a no-op.
      * If it pinned an override instead, backing out of the browser would leave
      * a relative name in the map that outlives the shipped sample. */
-    api->set_param(inst, "slot", "3");
-    wait_for_scan(300);
+    /* One sample: there is no slot 3 to aim at. Cancel is "write back the
+     * path the browser was seeded with", which must not pin an override. */
     n = api->get_param(inst, "sample_file", buf, sizeof buf);
     char convention[256] = {0};
     snprintf(convention, sizeof convention, "%s", n > 0 ? buf : "");
@@ -293,18 +293,13 @@ int main(int argc, char** argv)
     /* The settle window is 500 ms, so an assignment made just before the host
      * unloads the synth would otherwise be dropped: destroy has to flush it.
      * No wait here on purpose — that is the whole test. */
-    api->set_param(inst, "slot", "4");
-    wait_for_scan(300);
     api->set_param(inst, "sample_file", tone);
     api->destroy_instance(inst);          /* immediately, mid-settle */
     usleep(300 * 1000);
     inst = api->create_instance(dir, NULL);
-    api->set_param(inst, "voice_mode", "cubbi");
-    api->set_param(inst, "bank", "0");
-    api->set_param(inst, "slot", "4");
     wait_for_scan(1500);
     n = api->get_param(inst, "sample_map", buf, sizeof buf);
-    const bool flushed = (n > 0) && (strstr(buf, "4=") != NULL);
+    const bool flushed = (n > 0) && (strstr(buf, "1=") != NULL);
     printf("flush-on-unload: %s\n", flushed ? "kept" : "LOST");
 
     /* P11: touching a slot whose file is missing must never create files
@@ -320,8 +315,6 @@ int main(int argc, char** argv)
      * open every voice on every press (SetVoiceSlot, removed as P20), which is
      * what created the empty files this probe used to expect. */
     remove("/tmp/chompi_missing_probe.wav");
-    api->set_param(inst, "slot", "5");
-    wait_for_scan(300);
     api->set_param(inst, "sample_file", "/tmp/chompi_missing_probe.wav");
     wait_for_scan(1200);
 
