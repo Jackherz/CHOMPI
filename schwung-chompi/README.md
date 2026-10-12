@@ -118,7 +118,7 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | FX before or after the looper | `fx_pre_loop` — the Setup page's `FX Route`: `pre` / `post` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |
 | SD-card slot files | `samples/cubbi_aN.wav` / `jammi_aN.wav` on the Move's FS |
-| load a sample onto a key | the **Samples** level: pick `slot`, then `sample_file` opens the host's browser at `/data/UserData/UserLibrary/Samples` |
+| load a sample onto a key | the **Samples** level: pick `slot`, then `sample_file` opens the host's browser at the portal (`Built-in` = the card, `User Library` = yours) |
 | (no CHOMPI equivalent) | `start` / `end` are `wav_position`s: the host draws the assigned file's waveform on the pads |
 
 The shadow UI gets its page layout from `get_param("ui_hierarchy")` (levels
@@ -151,6 +151,30 @@ its browser, and with `live_preview` set, jogging through the list assigns as
 you go so you hear each candidate before committing. Backing out restores the
 previous value, which is the same path we reported — that is a *clear*, not an
 assignment, so cancelling never leaves a stray override behind.
+
+Where that browser opens is the **sample portal**:
+
+```
+/data/UserData/chompi-samples/
+├── Built-in       -> <module dir>/samples        (the card set)
+└── User Library   -> /data/UserData/UserLibrary/Samples   (your own wavs)
+```
+
+Both sources side by side in one directory, and the parameter's `root` is that
+directory, so the browser cannot wander off into the rest of `/data` (Schwung
+clamps a filepath browser to its root). The module creates the portal itself on
+load and `make deploy` creates it on the device too, so a store-style install
+that never ran a deploy script still gets it. The layout and the symlinks are
+mestela's `schwung-breakbeat`, which solved the same problem the same way —
+see PORT PATCH P18.
+
+The paths you see are portal paths ("`Built-in/cubbi_a1.wav`"), while the map
+stores real ones: an assignment that names a shipped sample through the portal
+still compares equal to that slot's convention name and *clears* the override
+instead of pinning a symlink route into the map. Two related parameters exist
+for tests and unusual installs: `sample_root` (read-only — the portal in use)
+and `portal_dir` / `user_library_dir` (write, to move it). `debug_portal` says
+whether each link resolves.
 
 If the file an assignment points at is later deleted, the slot goes silent —
 the module will not recreate it (only its own convention names get placeholders;

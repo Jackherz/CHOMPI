@@ -33,6 +33,7 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P15 | `DSPEngine.h` | FX routing: `fx_pre_loop_target` remembers what was asked for, and the crossfade lands on that instead of on "the other side", so two quick flips end where the user left it |
 | P16 | `DSPEngine.h` | `ClearLooper()` — the hardware's record+play gesture as one call, for the `loop_clear` parameter |
 | P17 | `DSPEngine.h` | `SelectVoiceSlot()` — record the selected slot without opening files, so the Samples page's slot knob can steer JAMMI without the sweep of opens that used to wedge a reader |
+| P18 | `chompi_port.h/.cpp` + `chompi_move.cpp` | the sample portal: a browser root (`/data/UserData/chompi-samples`) whose entries are symlinks to the shipped samples and the user's library, with paths presented through it and stored beside it |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -172,6 +173,57 @@ starts on slot 1 instead of the RAM buffer so it makes a musical sound out of
 the box, and `debug_voice` gained a summary line (`mode=… bank=… sel=… fx_pre=…
 loop_empty=…`) because the only other way to tell a dead knob from a dead bind
 was to listen.
+
+### P18 in detail
+
+Where the file browser starts, and where the fence is.
+
+A `filepath` parameter in Schwung carries a `root`, the browser is clamped to it
+(`isWithinRoot`), and it opens on the parameter's current value, else
+`start_path`, else the root. So a root of `/data` lets the user wander into
+system directories, while a root of just the user's library hides the samples
+that ship with the module — and neither is a good answer for a module whose
+sample set lives in its own install directory.
+
+The portal is the same fix mestela's `schwung-breakbeat` uses:
+
+```
+/data/UserData/chompi-samples/
+├── Built-in       -> <module dir>/samples
+└── User Library   -> /data/UserData/UserLibrary/Samples
+```
+
+One root, both sources as entries inside it, nothing else reachable. It is
+created at `create_instance` (idempotent, and `Built-in` is re-pointed whenever
+`sample_dir` changes) rather than by the deploy script, because a module
+installed from a store tarball never runs one. The two paths are also
+parameters (`portal_dir`, `user_library_dir`) so a host build can put them
+somewhere writable; `make deploy` creates the same layout on the device.
+
+Paths are then **presented through the portal and stored beside it**:
+
+* `get_param("sample_file")` answers `/data/UserData/chompi-samples/Built-in/
+  cubbi_a1.wav` — which is both what the browser seeds itself with (so it opens
+  on that file's own folder) and what the host reads to draw the `wav_position`
+  waveform (a symlink resolves).
+* `set_param("sample_file", …)` runs it through `CanonicalSamplePath()` first,
+  so the map keeps real paths. That is not cosmetic: the host writes the value
+  it was given straight back when the user cancels, and the port treats "the
+  path this slot already plays by convention" as a clear. Without
+  canonicalisation that cancel would look like a new assignment and pin a
+  symlink route (or, if the module moved, a dead one) into the map.
+
+Two smaller things came out of the same change:
+
+* `CanonicalSamplePath()` rewrites only paths that name a portal entry. A
+  relative path like `./samples/cubbi_a1.wav` — which is exactly what the
+  browser's cancel writes back on a host build, and what the convention names
+  look like when `sample_dir` is relative — passes through untouched. Re-basing
+  every relative path on the portal looked tidier and broke the cancel case.
+* `ForceSymlink()` makes the link target absolute with `realpath()` first. A
+  relative target is resolved against the *link's* directory, so
+  `portal/Built-in -> ./samples` points at `portal/samples` and dangles — which
+  is what happened the first time this ran with a relative `sample_dir`.
 
 ## Warnings the compiler still reports (all benign)
 

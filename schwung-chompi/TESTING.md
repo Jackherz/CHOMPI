@@ -119,7 +119,7 @@ Expect four sections. The important ones:
 
 | key | expected |
 | --- | --- |
-| `chain_params` | 2796 bytes, 35 `{…}` entries, *starts with `[` and ends with `]`* |
+| `chain_params` | 2815 bytes, 35 `{…}` entries, *starts with `[` and ends with `]`* |
 | `ui_hierarchy` | 1864 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
 | `split_voices` | empty (`(none)`) — that is the correct answer, not a failure |
 | `state` | 16-key flat JSON |
@@ -220,13 +220,13 @@ In order, each step isolates one subsystem:
    listen back with `delay_feedback` at zero — the delay's tail is *in* the
    loop. Clear, switch to `post` and repeat: the loop is dry, and the FX now
    colours its playback instead.
-5. **Audio in**: `input_source`, `input_gain`, `input_monitor` — play a source
+7. **Audio in**: `input_source`, `input_gain`, `input_monitor` — play a source
    into the Move's input and confirm it monitors, then record it.
-7. **State**: turn knobs, save the Set, power-cycle, reload. Values must come
+8. **State**: turn knobs, save the Set, power-cycle, reload. Values must come
    back — that is `state` doing its job (`fx_pre_loop` is in there too now). If
    a value resets, tell me which knob; the mirror in `ChompiInstance::Saved` is
    the likely suspect.
-8. **The ugly cases**: pull the sample files out from under it, load a set with
+9. **The ugly cases**: pull the sample files out from under it, load a set with
    a missing bank, switch `voice_mode` mid-note. It should stay silent and
    stable, not reboot the chain.
 
@@ -245,9 +245,18 @@ Then, with the chain loaded, open the module's editor and go to **Samples**:
 
 1. `SLOT` → the slot you want to change (1–14; slot 15 is the recorder's
    buffer and is refused on purpose).
-2. `SMPL` → the browser opens at `/data/UserData/UserLibrary/Samples`. If that
-   folder is empty, put something in it first:
-   `scp myloop.wav ableton@move.local:/data/UserData/UserLibrary/Samples/`
+2. `SMPL` → the browser opens inside the **sample portal**,
+   `/data/UserData/chompi-samples`, which holds two entries:
+
+   * `[Built-in]` — the card set that ships with the module
+   * `[User Library]` — your own samples
+     (`scp myloop.wav ableton@move.local:/data/UserData/UserLibrary/Samples/`
+     to put one there)
+
+   The browser is fenced to that directory: `..` at the top of it does nothing.
+   If `[User Library]` is missing, the directory above does not exist on the
+   device — create it, then reopen the module (or `make deploy`, which creates
+   the portal and the symlinks for you). `debug_portal` reports both links.
 3. Jog through the list — the slot follows the highlighted file (live
    preview), so you hear each one before you commit. Click to commit, back out
    to cancel. If you delete or rename an assigned file afterwards, that key

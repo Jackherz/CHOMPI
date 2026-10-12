@@ -115,6 +115,87 @@ bool SlotHasOverride(int mode, int bank, int slot);
  *  is NOT ours: CHOMPI's erase path would otherwise delete it. (PORT PATCH P10) */
 bool IsManagedPath(const char* path);
 
+/* --- the sample portal (PORT PATCH P18) -----------------------------------
+ *
+ * Where the file browser starts, and what a sample path looks like when the UI
+ * sees it.
+ *
+ * The chain host clamps a filepath browser to the parameter's `root` and starts
+ * it on the parameter's current value (see Schwung's filepath_browser.mjs:
+ * current value → start_path → root). Pointing that root at /data lets the user
+ * wander the whole device, and pointing it at the user's library alone hides
+ * the samples that ship with the module. So the module keeps a portal — a
+ * directory whose entries are symlinks:
+ *
+ *     /data/UserData/chompi-samples/
+ *     ├── Built-in      -> <module dir>/samples      (the tape-2.0 card set)
+ *     └── User Library  -> /data/UserData/UserLibrary/Samples
+ *
+ * and the filepath parameters are rooted there. One directory to open, both
+ * sources side by side, nothing outside it reachable. This is mestela's
+ * schwung-breakbeat layout (ensure_portal_exists in breakbeat.c), adopted here
+ * because it solves the same three problems.
+ *
+ * Paths are then presented THROUGH the portal and stored BESIDE it: the engine
+ * and the slot map keep canonical absolute paths (a user sample lives at its
+ * real location in the library), while the value the UI reads and writes is the
+ * portal path. CanonicalSamplePath() maps what the browser hands back onto the
+ * real file, so an assignment that names a shipped sample through the portal
+ * still compares equal to the slot's convention path and clears the override
+ * instead of pinning a symlink route into the map.
+ *
+ * All of this is management-thread work (create + set_param): it touches the
+ * filesystem exactly the way the sample map does, and never runs on the audio
+ * callback. */
+
+/** Longest portal path we build: "<portal>/<link>/<sample name>". */
+static constexpr size_t kPortalPathMax = kSampleDirMax + 64;
+
+/** Browser root. Set by the plugin at create (and by set_param "portal_dir"). */
+extern char g_portal_dir[kSampleDirMax + 1];
+
+/** The user's sample library. Set by the plugin at create (and by set_param
+ *  "user_library_dir"); only exposed when the directory actually exists. */
+extern char g_user_lib_dir[kSampleDirMax + 1];
+
+inline void SetPortalDir(const char* dir)
+{
+    const char* d = (dir == nullptr) ? "" : dir;
+    const size_t n = strnlen(d, kSampleDirMax);
+    memcpy(g_portal_dir, d, n);
+    g_portal_dir[n] = '\0';
+}
+
+inline void SetUserLibraryDir(const char* dir)
+{
+    const char* d = (dir == nullptr) ? "" : dir;
+    const size_t n = strnlen(d, kSampleDirMax);
+    memcpy(g_user_lib_dir, d, n);
+    g_user_lib_dir[n] = '\0';
+}
+
+/** Creates the portal directory and its two symlinks if it can, re-pointing
+ *  `Built-in` at the current sample directory each time (the sample directory
+ *  can be moved with set_param "sample_dir"). Idempotent, cheap, and quiet when
+ *  the device cannot support it — the browser then simply falls back to
+ *  absolute paths, which still work. Returns true when the portal is usable. */
+bool EnsureSamplePortal();
+
+/** Canonical path → what the UI should see. A sample inside the sample
+ *  directory is presented as "<portal>/Built-in/<name>", one inside the user
+ *  library as "<portal>/User Library/<name>", and anything else unchanged (if
+ *  the matching link does not exist, the canonical path is returned: a path
+ *  that cannot be opened would break the waveform the host draws from it). */
+void PresentSamplePath(const char* path, char* dst, size_t dst_len);
+
+/** What the browser hands back → the path to store and open. The inverse of
+ *  PresentSamplePath(), plus a relative path is resolved against the portal. */
+void CanonicalSamplePath(const char* path, char* dst, size_t dst_len);
+
+/** One line for the diagnostics: the portal, whether each link resolves, and
+ *  what the browser would open on. */
+int DescribePortal(char* buf, size_t buf_len);
+
 /** Map persistence. Both call plain stdio and must NOT be called from the
  *  audio callback — the plugin runs them on its worker/loader threads. */
 bool WriteSlotOverrideMap(const char* path); /* returns false if it could not be written */

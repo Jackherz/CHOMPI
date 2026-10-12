@@ -525,6 +525,15 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     }
     else if(strcmp(key, "sample_file") == 0)
     {
+        /* What the browser hands back is a portal path ("…/chompi-samples/
+         * Built-in/cubbi_a1.wav"); what the engine plays is the real file. The
+         * map stores the real one — see CanonicalSamplePath() — which is also
+         * what keeps the cancel case below a no-op when the browser writes back
+         * the value it was given. */
+        char canonical[chompi::kPortalPathMax];
+        chompi::CanonicalSamplePath(val, canonical, sizeof(canonical));
+        val = canonical;
+
         /* The shadow UI's file browser hands us an absolute path. The map is
          * keyed by the slot the user is editing (the `slot` param), so the
          * flow is: pick Slot, browse, and that slot now plays that file. An
@@ -573,7 +582,22 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         /* Loader thread normally; a live change just re-points the prefix for
          * the next filename the engine builds and asks for a rescan. */
         chompi::SetSampleDir(val);
+        /* …and for the browser's `Built-in` link, which follows the sample
+         * directory: one entry point, always pointing at the live set. */
+        chompi::EnsureSamplePortal();
         inst->want_scan_files.store(true);
+    }
+    else if(strcmp(key, "portal_dir") == 0)
+    {
+        /* Test/embedding hook: the browser root defaults to a device path that
+         * does not exist on a build host. */
+        chompi::SetPortalDir(val);
+        chompi::EnsureSamplePortal();
+    }
+    else if(strcmp(key, "user_library_dir") == 0)
+    {
+        chompi::SetUserLibraryDir(val);
+        chompi::EnsureSamplePortal();
     }
     else
         set_err(inst, "unknown param");
@@ -670,7 +694,7 @@ static const char* kChainParams
        * objects in these entries on purpose: the chain host's C-side
        * merge walks braces and keeps only the types it models (a filepath
        * is not a knob). */
-      "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data\",\"start_path\":\"/data/UserData/UserLibrary/Samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
+      "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
       "{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},"
       "{\"key\":\"record\",\"name\":\"Chompi Rec\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
       "{\"key\":\"input_monitor\",\"name\":\"Monitor\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
@@ -678,7 +702,7 @@ static const char* kChainParams
       "{\"key\":\"input_source\",\"name\":\"Input\",\"type\":\"enum\",\"options\":[\"line\",\"mic\"]},"
       "{\"key\":\"voice_mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"jammi\",\"cubbi\"]},"
       "{\"key\":\"bank\",\"name\":\"Bank\",\"type\":\"int\",\"min\":0,\"max\":4},"
-      "{\"key\":\"slot\",\"name\":\"Slot\",\"type\":\"int\",\"min\":0,\"max\":15},"
+      "{\"key\":\"slot\",\"name\":\"Slot\",\"type\":\"int\",\"min\":1,\"max\":15},"
       "{\"key\":\"octave\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-2,\"max\":2},{\"key\":\"loop_clear\",\"name\":\"Clear Loop\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},{\"key\":\"fx_pre_loop\",\"name\":\"FX Route\",\"type\":\"enum\",\"options\":[\"pre\",\"post\"]}]";
 
 static const char* kUiHierarchy
@@ -698,7 +722,7 @@ static const char* kUiHierarchy
       "{\"key\":\"input_gain\"},{\"key\":\"input_source\"}],"
       "\"knobs\":[\"record\",\"input_monitor\",\"input_gain\",\"input_source\"]},"
       "\"setup\":{\"label\":\"Setup\",\"params\":[{\"key\":\"voice_mode\"},{\"key\":\"bank\"},{\"key\":\"slot\"},"
-      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":0,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data\",\"start_path\":\"/data/UserData/UserLibrary/Samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
+      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":1,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
 
 // ---------------------------------------------------------------- plugin API
 
@@ -786,6 +810,12 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
                                0.01f /*attack*/, 1.f /*decay*/,
                                true /*autoloop*/, true /*sustain*/,
                                1.f /*gain*/, 0.5f /*pan*/);
+    /* The browser's root: a directory with symlinks to the shipped card set
+     * and to the user's library, so one place shows both and nothing outside it
+     * is reachable. Created here rather than assumed, because a module installed
+     * from a store tarball never runs a deploy script (PORT PATCH P18). */
+    chompi::EnsureSamplePortal();
+
     /* Restore the user's sample assignments before the first scan, so slots
      * they pointed at a library WAV read as present from the start. */
     {
@@ -991,8 +1021,20 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         char      path[chompi::kSlotPathMax];
         chompi::SlotSamplePath(mode, inst->engine.GetBank(), inst->selected_slot,
                                false, path, sizeof(path));
-        return snprintf(buf, buf_len, "%s", path);
+        /* …and through the portal, so the browser opens on the file's own
+         * folder inside its root, and the cell reads "Built-in/…" instead of the
+         * whole install path. */
+        char presented[chompi::kPortalPathMax];
+        chompi::PresentSamplePath(path, presented, sizeof(presented));
+        return snprintf(buf, buf_len, "%s", presented);
     }
+    if(strcmp(key, "sample_root") == 0)
+        /* The filepath parameter's `root`: where the browser starts and the
+         * fence around it. */
+        return snprintf(buf, buf_len, "%s",
+                        chompi::g_portal_dir[0] ? chompi::g_portal_dir : "(unset)");
+    if(strcmp(key, "debug_portal") == 0)
+        return chompi::DescribePortal(buf, (size_t)buf_len);
     if(strcmp(key, "sample_map") == 0)
     {
         /* Diagnostic: the assignments for the current mode/bank, as

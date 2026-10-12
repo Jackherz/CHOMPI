@@ -18,6 +18,8 @@
  */
 #include <sys/stat.h>
 #include <dlfcn.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,9 +95,9 @@ static double goertzel(const double* x, long n, double freq)
     return s1 * s1 + s2 * s2 - coeff * s1 * s2;
 }
 
-static double phase(const char* label, double seconds)
+static double phase(const char* label, double seconds, int note = 48)
 {
-    uint8_t on[3] = {0x90, 48, 100};    /* C3 -> slot 1 */
+    uint8_t on[3] = {0x90, (uint8_t)note, 100}; /* C3 (48) -> slot 1 */
     api->on_midi(inst, on, 3, MOVE_MIDI_SOURCE_INTERNAL);
 
     const int blocks = (int)(seconds * MOVE_SAMPLE_RATE / MOVE_FRAMES_PER_BLOCK);
@@ -342,6 +344,117 @@ int main(int argc, char** argv)
     if(cleaned)
         printf("cleaned %d placeholder file(s) from samples/\n", cleaned);
 
+    /* --- the portal: where the browser lives (PORT PATCH P18) --------------
+     *
+     * The module keeps a browser root — a directory with symlinks to the
+     * shipped samples and to the user's library — and presents sample paths
+     * through it while storing the real files. On a device that root is
+     * /data/UserData/chompi-samples; on this host it does not exist, so the
+     * two directories are pointed at a scratch tree, which is the same code
+     * path with a different prefix. */
+    printf("\n--- the sample portal -------------------------------------------\n");
+    /* Under /tmp, like the probe's tone: the module directory is usually the
+     * repo itself, and the browser root does not have to live beside the
+     * samples. Removed at the start and the end so a rerun starts clean. */
+    const char* portal  = "/tmp/chompi_probe_portal";
+    const char* userlib = "/tmp/chompi_probe_userlib";
+    char        link[600];
+
+    /* A stand-in user library with one WAV in it. */
+    char user_tone[600];
+    snprintf(user_tone, sizeof user_tone, "%s/my_sample.wav", userlib);
+    {
+        char cmd[1200];
+        snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s' && mkdir -p '%s' '%s'",
+                 userlib, portal, userlib, portal);
+        if(system(cmd) != 0)
+            printf("(could not create the scratch tree under %s)\n", dir);
+        FILE* in = fopen(tone, "rb");
+        FILE* out = fopen(user_tone, "wb");
+        if(in && out)
+        {
+            char copy[4096];
+            size_t got;
+            while((got = fread(copy, 1, sizeof copy, in)) > 0)
+                fwrite(copy, 1, got, out);
+        }
+        if(in)
+            fclose(in);
+        if(out)
+            fclose(out);
+    }
+
+    api->set_param(inst, "portal_dir", portal);
+    api->set_param(inst, "user_library_dir", userlib);
+    wait_for_scan(400);
+
+    n = api->get_param(inst, "sample_root", buf, sizeof buf);
+    const bool root_reported = (n > 0) && strcmp(buf, portal) == 0;
+
+    snprintf(link, sizeof link, "%s/Built-in", portal);
+    struct stat lst;
+    const bool builtin_link = (lstat(link, &lst) == 0 && S_ISLNK(lst.st_mode)
+                               && stat(link, &lst) == 0 && S_ISDIR(lst.st_mode));
+    snprintf(link, sizeof link, "%s/User Library", portal);
+    const bool userlib_link = (lstat(link, &lst) == 0 && S_ISLNK(lst.st_mode)
+                               && stat(link, &lst) == 0 && S_ISDIR(lst.st_mode));
+    printf("portal: root=%s built-in-link=%d user-library-link=%d\n",
+           root_reported ? "ok" : "WRONG", builtin_link, userlib_link);
+    if(n > 0)
+        printf("        %s\n", buf);
+    n = api->get_param(inst, "debug_portal", buf, sizeof buf);
+    printf("        %s\n", n > 0 ? buf : "-");
+
+    /* A shipped sample is presented through the portal … */
+    api->set_param(inst, "slot", "1");
+    wait_for_scan(300);
+    n = api->get_param(inst, "sample_file", buf, sizeof buf);
+    char presented[512] = {0};
+    snprintf(presented, sizeof presented, "%s", n > 0 ? buf : "");
+    snprintf(link, sizeof link, "%s/Built-in/", portal);
+    const bool presented_builtin = (strncmp(presented, link, strlen(link)) == 0);
+    const bool presented_readable = (presented[0] && stat(presented, &lst) == 0);
+    printf("shipped slot 1 presents as : %s\n", presented);
+
+    /* … and writing back exactly what it was given (the host's cancel) still
+     * leaves no override behind. This is the case a portal path could quietly
+     * break: the value read is not the value the engine opens. */
+    api->set_param(inst, "sample_file", presented);
+    wait_for_scan(1200);
+    n = api->get_param(inst, "sample_map", buf, sizeof buf);
+    const bool presented_cancel_clean = (n <= 0) || (strstr(buf, "1=") == NULL);
+
+    /* A user-library sample assigned through the portal plays. */
+    char via_portal[700];
+    snprintf(via_portal, sizeof via_portal, "%s/User Library/my_sample.wav", portal);
+    api->set_param(inst, "slot", "6");
+    wait_for_scan(300);
+    api->set_param(inst, "sample_file", via_portal);
+    wait_for_scan(1500);
+    n = api->get_param(inst, "sample_map", buf, sizeof buf);
+    char map_after[1024] = {0};
+    snprintf(map_after, sizeof map_after, "%s", n > 0 ? buf : "");
+    const bool stored_canonical = (strstr(map_after, user_tone) != NULL);
+    n = api->get_param(inst, "sample_file", buf, sizeof buf);
+    const bool presented_userlib = (n > 0) && (strcmp(buf, via_portal) == 0);
+    /* 57 -> slot 6, i.e. the sample reached through the symlink. The tone
+     * share is the same measurement the phases at the top use. */
+    const double via_portal_share = phase("5. user sample via the portal", 1.0, 57);
+    printf("user sample via portal        : written=%s stored=%s reads-back=%s\n",
+           via_portal, stored_canonical ? "canonical" : "AS GIVEN",
+           presented_userlib ? "portal path" : (n > 0 ? buf : "-"));
+    printf("portal: presented-builtin=%d readable=%d cancel-clean=%d\n",
+           presented_builtin, presented_readable, presented_cancel_clean);
+
+    /* Leave nothing behind: the portal tree is scratch, and the map and the
+     * placeholders are cleaned above. */
+    {
+        char cmd[1200];
+        snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s'", userlib, portal);
+        if(system(cmd) != 0)
+            printf("(could not remove the scratch portal tree)\n");
+    }
+
     printf("\nVERDICT stock=%.2f%% assigned=%.2f%% reloaded=%.2f%% cleared=%.2f%%\n",
            stock * 100, assigned * 100, reloaded * 100, cleared * 100);
     /* A pure tone is a single partial: most of the block's energy sits in one
@@ -352,7 +465,11 @@ int main(int argc, char** argv)
                     && reloaded > 0.50 /* the map persisted */
                     && cleared < 0.25
                     && assigned_slot3 && cancel_clean && back_to_stock
-                    && flushed && !user_stub && managed_ok;
+                    && flushed && !user_stub && managed_ok
+                    && root_reported && builtin_link && userlib_link
+                    && presented_builtin && presented_readable
+                    && presented_cancel_clean && stored_canonical
+                    && presented_userlib && via_portal_share > 0.50;
     printf("%s\n", ok ? "PASS: the assigned sample is what plays"
                       : "FAIL: the override did not change what plays");
     return ok ? 0 : 3;

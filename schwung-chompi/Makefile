@@ -148,10 +148,24 @@ SSH       ?= ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new
 SCP       ?= scp -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new
 REMOTE    ?= $(MOVE_USER)@$(MOVE)
 
+# The file browser's root. The module creates this itself on load (PORT PATCH
+# P18), but doing it here too means the browser is right from the first deploy,
+# before anything has been loaded. Same layout as mestela's schwung-breakbeat:
+# one directory, symlinks to the shipped set and to the user's library.
+PORTAL_DIR = /data/UserData/chompi-samples
+USER_LIB   = /data/UserData/UserLibrary/Samples
+define make_portal
+	$(SSH) $(REMOTE) "mkdir -p '$(PORTAL_DIR)' && \
+	  ln -sfn '$(REMOTE_DIR)/samples' '$(PORTAL_DIR)/Built-in' && \
+	  if [ -d '$(USER_LIB)' ]; then ln -sfn '$(USER_LIB)' '$(PORTAL_DIR)/User Library'; fi && \
+	  ls -la '$(PORTAL_DIR)'"
+endef
+
 deploy: module
 	$(SSH) $(REMOTE) "mkdir -p $(REMOTE_DIR)/samples"
 	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):$(REMOTE_DIR)/
 	$(SCP) build/module/samples/*.wav $(REMOTE):$(REMOTE_DIR)/samples/
+	$(make_portal)
 	@echo "deployed to $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)"
 	@n=$$(ls samples/*.wav | wc -l | tr -d ' '); \
 	 if [ "$$n" -lt 20 ]; then \
@@ -160,6 +174,7 @@ deploy: module
 	   echo "      or 'make samples-full' to stage them locally for tests."; \
 	 fi
 	@echo "reload the chain (or reboot) to pick it up; watch: make logs"
+	@echo "(browser root above: 'Built-in' is this module's samples, 'User Library' is yours)"
 
 # The full card set is 161 MB: a one-time push straight to the device, so the
 # repo checkout never carries it and `make deploy` (the loop you run all day)
@@ -170,6 +185,7 @@ deploy-full: module
 	$(SCP) build/module/samples/*.wav $(REMOTE):$(REMOTE_DIR)/samples/
 	@echo "pushing the full card set from $(SAMPLES_SRC) (~161 MB, one time) ..."
 	$(SCP) $(SAMPLES_SRC)/cubbi_*.wav $(SAMPLES_SRC)/jammi_*.wav $(REMOTE):$(REMOTE_DIR)/samples/
+	$(make_portal)
 	@echo "deployed with the full card set: $$($(SSH) $(REMOTE) 'ls $(REMOTE_DIR)/samples/*.wav | wc -l' | tr -d ' ') wavs on $(MOVE)"
 	@echo "reload the chain (or reboot) to pick it up"
 
