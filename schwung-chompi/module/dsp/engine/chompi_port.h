@@ -33,6 +33,15 @@ namespace chompi
     extern char g_last_open_fail[256];
     extern int  g_last_open_errno;
 
+    /** PORT PATCH P21: the sample translator (port/sample_view.h). `g_sample_view_count`
+     *  counts the files this session has had to convert, and `g_last_sample_view`
+     *  says what the most recent one was -- "24-bit stereo -> 16-bit stereo"
+     *  or "format=17 bits=4 ch=1 -> silence (not decodable)". A user sample
+     *  that needed translating is otherwise invisible: it just sounds right.
+     *  Surfaced by `debug_wav` and by `debug_voice`. */
+    extern int  g_sample_view_count;
+    extern char g_last_sample_view[160];
+
 /** Longest sample directory we accept. The engine's filename buffers are 256
  *  bytes, so the directory is clamped to leave room for "/cubbi_a4_double.wav"
  *  — a directory that did not fit would otherwise truncate the sample name and

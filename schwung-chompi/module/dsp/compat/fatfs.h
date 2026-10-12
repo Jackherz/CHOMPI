@@ -55,6 +55,13 @@ enum
 };
 
 /* FatFS open flags (only the ones the engine uses) */
+/* The port's WAV translator (port/sample_view.h): a file the engine cannot read
+ * as-is gets one of these, and f_read/f_lseek/f_size speak in converted bytes. */
+namespace chompi
+{
+struct SampleView;
+}
+
 #define FA_READ 0x01
 #define FA_WRITE 0x02
 #define FA_OPEN_EXISTING 0x00
@@ -84,6 +91,12 @@ typedef struct
     {
         std::uint32_t objsize = 0;
     } obj;
+
+    /* When the file is not in the engine's native layout (16-bit stereo at
+     * byte 44), this holds the converter: see port/sample_view.h. `size`/`tell`
+     * above are then VIRTUAL (converted) bytes, which is all the engine ever
+     * sees. Freed by f_close()/re-open; nullptr for every native file. */
+    chompi::SampleView* sample_view = nullptr;
 } FIL;
 
 typedef struct

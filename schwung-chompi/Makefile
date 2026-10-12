@@ -23,6 +23,7 @@ AARCH64_OUT  := $(BUILD)/aarch64/chompi_move.so
 PORT_SRC := \
 	$(DSP_DIR)/chompi_move.cpp \
 	$(DSP_DIR)/port/chompi_port.cpp \
+	$(DSP_DIR)/port/sample_view.cpp \
 	$(DSP_DIR)/compat/chompi_platform.cpp \
 	$(DSP_DIR)/engine/FileStreamingManager.cpp \
 	$(DSP_DIR)/third_party/daisysp/Control/adsr.cpp \
@@ -32,6 +33,7 @@ PORT_SRC := \
 INCLUDES := \
 	-I $(DSP_DIR)/compat \
 	-I $(DSP_DIR)/engine \
+	-I $(DSP_DIR)/port \
 	-I $(DSP_DIR)/third_party \
 	-I $(DSP_DIR)/third_party/daisysp \
 	-I $(DSP_DIR)/third_party/schwung
@@ -97,7 +99,7 @@ $(AARCH64_OUT): $(PORT_SRC) $(wildcard $(DSP_DIR)/engine/*.h) $(wildcard $(DSP_D
 # without a Move: param serving, state round-trip, key handling. `tools`
 # builds them for HOST, `tools-aarch64` for the device (then scp them over).
 TOOL_SRC  := tools/serve_params.cpp tools/state_roundtrip.cpp tools/key_probe.cpp \
-             tools/param_readback_probe.cpp
+             tools/param_readback_probe.cpp tools/sample_format_probe.cpp
 TOOLS     := $(patsubst tools/%.cpp,$(BUILD)/%,$(TOOL_SRC))
 TOOLS_A64 := $(patsubst tools/%.cpp,$(BUILD)/aarch64/%,$(TOOL_SRC))
 

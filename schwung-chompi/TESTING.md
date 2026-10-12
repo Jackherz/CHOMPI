@@ -277,8 +277,35 @@ g++ -std=c++17 -O1 -D_Static_assert=static_assert \
 ```
 
 It renders a 1 kHz tone, assigns it, tears the plugin down and back up, then
-measures which file actually played. Expect `PASS`, with the assigned tone at
-~90% of the block's energy and the shipped sample ~10%.
+measures which file played. Expect `PASS`, with the assigned tone at ~90% of
+the block's energy and the shipped sample ~10%.
+
+### Any WAV or AIFF a user brings
+
+The engine streams raw bytes and assumes 16-bit stereo starting at byte 44;
+your file is usually neither. The port parses the container at open and hands
+the engine a converted view of the file (`module/dsp/port/sample_view.h`), so
+format, channel count and chunk layout stop mattering:
+
+```sh
+make host tools
+python3 tools/make_sample_variants.py /tmp/wavfmt/samples
+mkdir -p /tmp/wavfmt/samples && cp samples/*.wav /tmp/wavfmt/samples/
+build/sample_format_probe build/chompi_move.so /tmp/wavfmt /tmp/wavfmt/samples
+```
+
+Expect `PASS` — every variant plays the tone it holds. What it covers: 8/16/24/
+32-bit PCM, float32/float64, WAVE_FORMAT_EXTENSIBLE, LIST/bext chunks before
+`data`, mono (which used to play at double speed), multichannel, truncated
+files, u-law and A-law; AIFF and AIFF-C (`sowt`, `fl32`, `ulaw`, signed 8-bit);
+reverse playback, start/end regions and looping *on a converted file*; IMA
+ADPCM going silent instead of noisy; and the shipped card still being read
+raw. `get_param("debug_view")` (or `debug_voice`) names the files that needed
+translating, and says so when one could not be decoded.
+
+The browser offers `.wav`, `.aif` and `.aiff` (`sample_file`'s own filter).
+Anything else — MP3, FLAC, Ogg — has no decoder here yet: rename it to `.wav`
+and it will be silent rather than noisy, and `debug_view` will name it.
 
 ---
 

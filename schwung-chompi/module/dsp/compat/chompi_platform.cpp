@@ -19,6 +19,7 @@
 #include "daisy.h"
 #include "fatfs.h"
 #include "chompi_port.h"
+#include "sample_view.h"
 
 // ---------------------------------------------------------------- daisy::System
 
@@ -47,6 +48,15 @@ static FRESULT errno_to_fresult(int e)
         case ENOSPC: return FR_DISK_ERR;
         case EINVAL: return FR_INVALID_PARAMETER;
         default: return FR_DISK_ERR;
+    }
+}
+
+static void close_sample_view(FIL* fp)
+{
+    if(fp->sample_view != nullptr)
+    {
+        chompi::SampleViewFree(fp->sample_view);
+        fp->sample_view = nullptr;
     }
 }
 
@@ -102,6 +112,7 @@ extern "C"
         if(fp->in_use.load(std::memory_order_relaxed))
         {
             ::close(fp->fd);
+            close_sample_view(fp);
             fp->in_use.store(false, std::memory_order_relaxed);
         }
 
@@ -122,7 +133,16 @@ extern "C"
         }
 
         fp->fd = fd;
-        fp->size.store(static_cast<int64_t>(st.st_size), std::memory_order_relaxed);
+        /* PORT P21: user samples arrive in whatever format the user's DAW
+         * wrote. Parse the header and, when the file is not the 16-bit stereo
+         * stream the engine assumes, attach a converter; from here on `size`
+         * and `tell` are converted bytes. A file we cannot parse (an empty
+         * one, a recording being created, something that is not a WAV at all)
+         * gets no view and is read raw, exactly as before. */
+        const int64_t raw_size = static_cast<int64_t>(st.st_size);
+        fp->sample_view = (raw_size > 0) ? chompi::SampleViewOpen(fd, raw_size, path) : nullptr;
+        fp->size.store(fp->sample_view ? chompi::SampleViewSize(fp->sample_view) : raw_size,
+                       std::memory_order_relaxed);
         fp->tell.store(0, std::memory_order_relaxed);
         fp->in_use.store(true, std::memory_order_relaxed);
         return FR_OK;
@@ -133,6 +153,7 @@ extern "C"
         if(!fp || !fp->in_use.load(std::memory_order_relaxed))
             return FR_INVALID_OBJECT;
         const int ret = ::close(fp->fd);
+        close_sample_view(fp);
         fp->in_use.store(false, std::memory_order_relaxed);
         return ret == 0 ? FR_OK : FR_DISK_ERR;
     }
@@ -143,6 +164,20 @@ extern "C"
             *br = 0;
         if(!fp || !fp->in_use.load(std::memory_order_relaxed))
             return FR_INVALID_OBJECT;
+
+        if(fp->sample_view != nullptr)
+        {
+            /* Converted read: the position is the virtual one the engine keeps
+             * in `tell`, and the view does its own preads at the matching
+             * source offset. */
+            const size_t got = chompi::SampleViewRead(fp->sample_view,
+                                                   fp->tell.load(std::memory_order_relaxed),
+                                                   buff, btr);
+            if(br)
+                *br = static_cast<UINT>(got);
+            fp->tell.fetch_add(static_cast<int64_t>(got), std::memory_order_relaxed);
+            return FR_OK;
+        }
 
         const ssize_t got = ::read(fp->fd, buff, btr);
         if(got < 0)
@@ -161,6 +196,12 @@ extern "C"
         if(!fp || !fp->in_use.load(std::memory_order_relaxed))
             return FR_INVALID_OBJECT;
 
+        /* Writes only ever target the engine's own files (the recorder, the
+         * looper). Writing through a converter would scramble somebody's
+         * sample, so refuse instead. */
+        if(fp->sample_view != nullptr)
+            return FR_DENIED;
+
         const ssize_t put = ::write(fp->fd, buff, btw);
         if(put < 0)
             return errno_to_fresult(errno);
@@ -177,6 +218,13 @@ extern "C"
     {
         if(!fp || !fp->in_use.load(std::memory_order_relaxed))
             return FR_INVALID_OBJECT;
+        if(fp->sample_view != nullptr)
+        {
+            /* Nothing to seek in the file itself: the converter computes the
+             * source offset from the virtual position on every read. */
+            fp->tell.store(static_cast<int64_t>(ofs), std::memory_order_relaxed);
+            return FR_OK;
+        }
         if(::lseek(fp->fd, static_cast<off_t>(ofs), SEEK_SET) < 0)
             return FR_DISK_ERR;
         fp->tell.store(ofs, std::memory_order_relaxed);
@@ -194,6 +242,8 @@ extern "C"
     {
         if(!fp || !fp->in_use.load(std::memory_order_relaxed))
             return FR_INVALID_OBJECT;
+        if(fp->sample_view != nullptr)
+            return FR_DENIED;
         const int64_t tell = fp->tell.load(std::memory_order_relaxed);
         if(::ftruncate(fp->fd, static_cast<off_t>(tell)) != 0)
             return FR_DISK_ERR;

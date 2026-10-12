@@ -1850,6 +1850,14 @@ namespace daisy
                                     strerror(chompi::g_last_open_errno));
             if(en > 0 && en < (int)(len - (size_t)off))
                 off += en;
+            /* PORT PATCH P21: user samples the WAV translator had to convert,
+             * and what they were. A file it could not decode is silent by
+             * design and named here. */
+            const int wn = snprintf(buf + off, len - (size_t)off,
+                                    "sampleviews=%d last='%s'\n",
+                                    chompi::g_sample_view_count, chompi::g_last_sample_view);
+            if(wn > 0 && wn < (int)(len - (size_t)off))
+                off += wn;
             if(kn > 0 && kn < (int)(len - (size_t)off))
                 off += kn;
             return off;
