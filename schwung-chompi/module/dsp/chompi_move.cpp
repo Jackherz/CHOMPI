@@ -61,42 +61,74 @@
  *
  * PORT PATCH P22.
  *
- * Move's 32 pads are MIDI 68..99, four rows of eight, the bottom row first.
- * We lay CHOMPI's own keybed out on them: the lower row of each pair of rows
- * is the WHITE keys (C D E F G A B C) and the row above it holds the black
- * keys that sit between them (C# D# F# G# A#). Six pads fall where a piano has
- * no key at all -- three in each octave -- and they do nothing, the same six a
- * real keyboard leaves out. (Two octaves, so the top C of the lower pair is the
- * bottom C of the upper pair, exactly like CHOMPI's own 15 white keys.)
+ * Move's 32 pads are MIDI 68..99, four rows of eight, the bottom row first, and
+ * they are a chromatic keybed read left to right and bottom to top: pad 68 is
+ * the C the selected slot starts on, pad 69 its C#, pad 80 the C of the next
+ * octave, and so on. Every pad sounds. Notes that are not pads (a MIDI
+ * keyboard, or a host transposition that moved the pads) continue the same
+ * ladder below and above the surface.
  *
  * That layout is half the story. The other half is what a SLOT is here:
  *
- *   ONE SLOT IS ONE OCTAVE.
+ *   ONE SLOT IS ONE OCTAVE -- twelve pads.
  *
  * On the hardware one pad is one slot -- 25 keys for 15 slots, so a sample
  * lives on a single key and the rest of the keybed plays its neighbours. Here
- * the slot you select with the `slot` knob owns the pair of rows that make up
- * one octave, and the pair above it is the NEXT slot: the surface shows two
- * slots at a time and the knob pages through them (slots 5 and 6, then 6 and 7,
- * ...). Within a slot's octave the key decides the PITCH: the octave's C plays
- * the sample at its own speed, the keys above it play it faster, up to the B
- * at 1.89x. So a sample covers an octave rather than a key -- load your own
+ * the slot you select with the `slot` knob owns the first twelve pads, the next
+ * twelve are the NEXT slot up, and the surface is two and two thirds octaves
+ * tall: slot 5 shows slots 5 and 6 in full, plus the first eight pads of 7.
+ * The knob pages that window through the slots.
+ *
+ * Within a slot's octave the pad decides the PITCH: the octave's C plays the
+ * sample at its own speed (1.00x), the pads above it play it faster, up to the
+ * B at 1.89x. So a sample covers an octave rather than a pad -- load your own
  * WAV into a slot and you can play that whole octave with it.
  *
  * The `octave` knob transposes the whole keybed, an octave per step, in both
- * voices. Notes that are not one of the 32 pads -- a MIDI keyboard, or a host
- * transposition that moved the pads -- are read chromatically so they play too.
+ * voices. JAMMI has no slots: one sample plays the whole keybed and the pitch is
+ * the pad's distance from pad 80 (its own speed), the way CHOMPI's keybed reads
+ * the keyboard from its own middle C.
  */
-static const signed char kMoveKey[32] = {
-     0,  2,  4,  5,  7,  9, 11, 12, /* row 1: white keys, lower octave */
-    -1,  1,  3, -1,  6,  8, 10, -1, /* row 2: its black keys */
-    12, 14, 16, 17, 19, 21, 23, 24, /* row 3: white keys, upper octave */
-    -1, 13, 15, -1, 18, 20, 22, -1, /* row 4: its black keys */
-};
-static const int kMovePadLow  = 68;  /* bottom-left pad (MovePads[0]) */
-static const int kMovePadHigh = 99;  /* top-right pad */
-/* Steps in the keybed that begin a new slot, and the semitones in a slot. */
+static const int kMovePadLow   = 68;  /* bottom-left pad (MovePads[0]) */
+static const int kMovePadCount = 32;  /* four rows of eight: MIDI 68..99 */
+/* Pads in an octave -- and one slot is one octave -- so this is the slot span. */
 static const int kKeybedSlotSpan = 12;
+/* The pad JAMMI plays the sample's own speed on: twelve pads up from the bottom
+ * left, which is the C the second octave of the surface starts on. Deliberately
+ * the same pad a slot's octave starts on in CUBBI, so pad 80 -- twelve semitones
+ * above the bottom-left pad -- is a C and a 1.00x in both voices. It also keeps
+ * the surface playable in both directions: -12 semitones below it (0.50x) up to
+ * +19 above (3.00x), rather than the 8.00x that reading the pads at their own
+ * MIDI pitch would give. */
+static const int kJammiRootPad = kMovePadLow + kKeybedSlotSpan;
+
+/** Where a note sits on the keybed: which octave it is above pad 68 (negative
+ *  below it) and how many semitones into that octave. Any note works, so a MIDI
+ *  keyboard walks the same ladder as the pads. */
+static void keybed_position(int note, int* octave, int* semitones)
+{
+    const int rel = note - kMovePadLow;
+    /* floor division, so rel = -1 is one octave DOWN and not octave 0 */
+    const int oct = (rel >= 0) ? (rel / kKeybedSlotSpan)
+                               : ((rel - (kKeybedSlotSpan - 1)) / kKeybedSlotSpan);
+    *octave = oct;
+    *semitones = rel - kKeybedSlotSpan * oct; /* 0..11, always */
+}
+
+/** The slot an octave of the keybed plays. One slot is one octave, so the slot
+ *  travels with the OCTAVE rather than with the pad: keys 0..11 are the selected
+ *  slot, 12..23 the next one up. Slot 15 is the recording buffer and is the last
+ *  stop, so octaves past it sit on the buffer rather than off the end of the
+ *  table. */
+static int keybed_slot(int octave, int selected_slot)
+{
+    int slot = selected_slot + octave;
+    if(slot > 15)
+        slot = 15;
+    if(slot < 1)
+        slot = 1;
+    return slot;
+}
 
 /* chompi::g_sample_dir (the runtime sample directory) is defined in
  * port/chompi_port.cpp so the engine links without the plugin too. */
@@ -219,47 +251,6 @@ static void set_err(ChompiInstance* inst, const char* msg)
     // snprintf is fine here: set_param/get_param are allowed to be slow-ish by
     // comparison, but they are still on the callback, so keep it to one call.
     snprintf(inst->lasterr, sizeof(inst->lasterr), "%s", msg);
-}
-
-/** Where a note falls in the two-octave keybed: 0..24, or -1 for a pad that
- *  has no key under it (see kMoveKey). A note that is not one of the pads is
- *  read chromatically, so a MIDI keyboard plays the same shape. */
-static int keybed_key(int note)
-{
-    if(note >= kMovePadLow && note <= kMovePadHigh)
-        return kMoveKey[note - kMovePadLow];
-
-    int rel = note - 60;
-    int oct = (rel >= 0) ? (rel / 12) : ((rel - 11) / 12); /* floor, not trunc */
-    if(oct < 0)
-        oct = 0;
-    if(oct > 1)
-        oct = 1;
-    int pc = ((rel % 12) + 12) % 12;
-    return oct * 12 + pc;
-}
-
-/** The slot a key of the keybed plays. One slot is one octave (see kMoveKey),
- *  so the key's place in the keybed -- not the key itself -- decides it: the
- *  lower octave is the selected slot, the upper one the next slot up. Slot 15
- *  is the recording buffer and is the last stop, so the upper octave sits on it
- *  rather than running past the end of the table. */
-static int keybed_slot(int key, int selected_slot)
-{
-    int slot = selected_slot + (key >= kKeybedSlotSpan ? 1 : 0);
-    if(slot > 15)
-        slot = 15;
-    if(slot < 1)
-        slot = 1;
-    return slot;
-}
-
-/** How far the key is above the root of its own octave: 0 at the C the slot
- *  starts on, 12 at the C one octave up. This is what the sample is pitched by,
- *  and it is why a slot covers an octave. */
-static int keybed_semitones(int key)
-{
-    return key % kKeybedSlotSpan;
 }
 
 // ---------------------------------------------------------------- worker
@@ -1085,9 +1076,8 @@ static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)
     {
         /* d1 is the note, d2 the velocity — a distinction worth stating out
          * loud, because reading d2 here is exactly the bug this line had. */
-        const int key = keybed_key(d1);
-        if(key < 0)
-            return; /* a pad with no key under it, or an unmappable note */
+        int key_octave = 0, semitones = 0;
+        keybed_position(d1, &key_octave, &semitones);
 
         const bool cubbi = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI);
         const int  octave = inst->octave.load();
@@ -1102,8 +1092,10 @@ static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)
          * JAMMI does with the note.
          *
          * JAMMI: one sample for the whole keybed, so there is no slot to pick
-         * and only the pitch; the C in the middle of the two octaves is the
-         * sample's own speed, as on the hardware.
+         * and only the pitch, measured from pad 80 (the sample's own speed, as
+         * CHOMPI's own middle C is on the hardware). Every pad therefore sounds
+         * in both modes: this is a chromatic ladder, eight pads to a row, not a
+         * piano with keys missing.
          *
          * The slot's own values are loaded by the engine's key path, one press
          * at a time (PORT PATCH P19).
@@ -1113,11 +1105,10 @@ static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)
          * re-pointed voices that were mid-note at a file that had not finished
          * opening, and a pad whose slot had no file took the whole keybed
          * silent. */
-        const int slot = cubbi ? keybed_slot(key, inst->selected_slot) : 0;
-        const int semitones = cubbi
-            ? keybed_semitones(key)          /* 0..12: the octave's own span */
-            : key - kKeybedSlotSpan;         /* -12..12: C in the middle at 0 */
-        const int pitch = semitones + 12 * octave;
+        const int slot = cubbi ? keybed_slot(key_octave, inst->selected_slot) : 0;
+        const int pitch = (cubbi ? semitones                     /* 0..11 */
+                                 : (d1 - kJammiRootPad)          /* -12..19 */
+                          ) + 12 * octave;
 
         e.request_fifo.PushBack(daisy::KeyRequest(daisy::KeyRequest::Type::START,
                                                   (float)pitch,

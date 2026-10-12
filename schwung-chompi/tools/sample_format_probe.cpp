@@ -40,6 +40,12 @@ static int              checks = 0, failures = 0;
 
 static const double kTone404 = 404.25; /* 440 Hz in the file, 44.1/48 engine */
 
+/* PORT PATCH P22: the pad to play the tone on. The pads are a chromatic ladder
+ * whose C is the bottom-left pad (MIDI 68), so that pad is the slot's own
+ * speed (1.00x) -- an external MIDI note like 48 would land a few semitones up
+ * the ladder and read 26% high. */
+static const int kToneNote = 68;
+
 static void check(const char* what, bool ok, const char* detail)
 {
     printf("%s %-46s %s\n", ok ? " ok " : "FAIL", what, detail);
@@ -208,7 +214,7 @@ static Capture play(const char* dir, const char* file, int note)
 
 static void expect_tone(const char* file, const char* dir, double want_hz)
 {
-    const Capture c = play(dir, file, 48);
+    const Capture c = play(dir, file, kToneNote);
     char          d[160];
     snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz share=%.1f%% want %.1f",
              c.rms, c.peak_f, c.share * 100.0, want_hz);
@@ -268,7 +274,7 @@ int main(int argc, char** argv)
      * interleaved samples. Its own check, because that failure is a pitch bug,
      * not a decode bug. */
     {
-        const Capture c = play(fmt_dir, "user_16bit_mono.wav", 48);
+        const Capture c = play(fmt_dir, "user_16bit_mono.wav", kToneNote);
         char          d[160];
         snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz share=%.1f%% (808 Hz would be 2x speed)",
                  c.rms, c.peak_f, c.share * 100.0);
@@ -288,7 +294,7 @@ int main(int argc, char** argv)
      * ways, one of them must sound like a tone. */
     expect_tone("user_8bit_stereo.aiff", fmt_dir, kTone404);
     {
-        const Capture c = play(fmt_dir, "user_8bit_stereo.wav", 48);
+        const Capture c = play(fmt_dir, "user_8bit_stereo.wav", kToneNote);
         char          d[160];
         snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz share=%.1f%%", c.rms, c.peak_f,
                  c.share * 100.0);
@@ -308,7 +314,7 @@ int main(int argc, char** argv)
          * file layout above it is completely different. */
         set("start", "0.50");
         settle_ms(600);
-        const Capture c = play(fmt_dir, "twotone_16bit_stereo.aiff", 48);
+        const Capture c = play(fmt_dir, "twotone_16bit_stereo.aiff", kToneNote);
         char          d[200];
         snprintf(d, sizeof d, "from halfway peak=%.1fHz (880 Hz half, -> 808)", c.peak_f);
         check("start=0.5 works on an AIFF too", fabs(c.peak_f - 808.5) <= 12.0, d);
@@ -342,7 +348,7 @@ int main(int argc, char** argv)
                 snprintf(via, sizeof via, "%s/User Library/my_ai_24.aiff", portal);
                 set("sample_file", via);
                 settle_ms(900);
-                const Capture c = press(48, 1.0);
+                const Capture c = press(kToneNote, 1.0);
                 char          d[240];
                 snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz share=%.1f%%", c.rms, c.peak_f,
                          c.share * 100.0);
@@ -358,7 +364,7 @@ int main(int argc, char** argv)
     /* --- graceful failures ---------------------------------------------- */
     printf("\n--- what the port does with files it cannot decode ----------------\n");
     {
-        const Capture c = play(fmt_dir, "user_adpcm.wav", 48);
+        const Capture c = play(fmt_dir, "user_adpcm.wav", kToneNote);
         char          d[160];
         snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz share=%.1f%%", c.rms, c.peak_f,
                  c.share * 100.0);
@@ -366,12 +372,12 @@ int main(int argc, char** argv)
         check("user_adpcm.wav is silent, not noise", c.rms < 0.006, d);
     }
     {
-        const Capture c = play(fmt_dir, "user_notawav.wav", 48);
+        const Capture c = play(fmt_dir, "user_notawav.wav", kToneNote);
         char          d[160];
         snprintf(d, sizeof d, "rms=%.4f (no crash, engine still alive)", c.rms);
         check("user_notawav.wav does not crash the engine", true, d);
         /* ... and the voice is still usable afterwards. */
-        const Capture again = play(fmt_dir, "user_24bit_stereo.wav", 48);
+        const Capture again = play(fmt_dir, "user_24bit_stereo.wav", kToneNote);
         char          d2[160];
         snprintf(d2, sizeof d2, "rms=%.4f peak=%.1fHz share=%.1f%%", again.rms, again.peak_f,
                  again.share * 100.0);
@@ -391,11 +397,11 @@ int main(int argc, char** argv)
          * engine (`SetSlotPitchFromUi`), so it is its own knob. */
         set("reverse", "Off");
         settle_ms(600);
-        const Capture fwd = play(fmt_dir, "ramp_16bit_stereo.wav", 48);
+        const Capture fwd = play(fmt_dir, "ramp_16bit_stereo.wav", kToneNote);
 
         set("reverse", "On");
         settle_ms(900);
-        const Capture back = play(fmt_dir, "ramp_16bit_stereo.wav", 48);
+        const Capture back = play(fmt_dir, "ramp_16bit_stereo.wav", kToneNote);
 
         char d[220];
         snprintf(d, sizeof d,
@@ -413,14 +419,14 @@ int main(int argc, char** argv)
         /* Two tones in one file: starting halfway must select the 880 Hz half.
          * That is only true if the region arithmetic (`f_size() - 44`, which
          * the converter owns) is right. */
-        const Capture whole = play(fmt_dir, "twotone_24bit_stereo.wav", 48);
+        const Capture whole = play(fmt_dir, "twotone_24bit_stereo.wav", kToneNote);
         char          d[200];
         snprintf(d, sizeof d, "from the top peak=%.1fHz (440 Hz half, -> 404)", whole.peak_f);
         check("converted file plays from the top", fabs(whole.peak_f - kTone404) <= 8.0, d);
 
         set("start", "0.50");
         settle_ms(600);
-        const Capture half = play(fmt_dir, "twotone_24bit_stereo.wav", 48);
+        const Capture half = play(fmt_dir, "twotone_24bit_stereo.wav", kToneNote);
         snprintf(d, sizeof d, "from halfway peak=%.1fHz (880 Hz half, -> 808)", half.peak_f);
         check("start=0.5 selects the second half of a converted file",
               fabs(half.peak_f - 808.5) <= 12.0, d);
@@ -431,7 +437,7 @@ int main(int argc, char** argv)
         /* A one-second file with auto-loop on has to still be sounding after
          * its end -- which for a converted file means the loop point and the
          * wrap both work on converted bytes. */
-        const Capture c = play(fmt_dir, "user_24bit_stereo.wav", 48);
+        const Capture c = play(fmt_dir, "user_24bit_stereo.wav", kToneNote);
         char          d[200];
         snprintf(d, sizeof d, "rms over 2.5 s = %.4f (file is 1 s, loop on)", c.rms);
         check("converted file loops", c.rms >= 0.010, d);
@@ -446,7 +452,7 @@ int main(int argc, char** argv)
         settle_ms(400);
         set("sample_clear", "1");
         settle_ms(900);
-        const Capture c = press(48, 1.0);
+        const Capture c = press(kToneNote, 1.0);
         char          d[200];
         snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz (the card's cubbi_a1 is 440 Hz)", c.rms,
                  c.peak_f);

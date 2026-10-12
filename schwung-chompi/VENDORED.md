@@ -37,7 +37,7 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P19 | `chompi_port.h/.cpp` + `DSPEngine.h` | per-(mode, bank, slot) values in the port's own store (`samples/slots.values`), loaded on the engine's key path instead of the hardware's preset store, so the Tape page follows the slot |
 | P20 | `DSPEngine.h` | a CUBBI key press no longer calls `SetVoiceSlot()` — one voice, opened once, and a slot with no file no longer takes the whole keybed silent |
 | P21 | `port/sample_view.h/.cpp` + `compat/chompi_platform.cpp` | a file-byte-addressed converter in front of the engine's `f_read`: WAV at any rate/bit depth and AIFF/AIFC in, canonical 16-bit stereo out; the plain RIFF case keeps the raw fast path |
-| P22 | `SampleReader.h`, `DSPEngine.h`, `chompi_port.h/.cpp`, `chompi_move.cpp` | one slot = one octave of the keybed: the pads are a two-octave piano, a key's octave picks the slot and its distance from that octave's C sets the pitch, and a sample with no `_double` companion keeps its own pitch above 1.5× (see below) |
+| P22 | `SampleReader.h`, `DSPEngine.h`, `chompi_port.h/.cpp`, `chompi_move.cpp` | one slot = one octave of the keybed: the pads are a chromatic ladder, a pad's octave picks the slot and its distance from that octave's C sets the pitch, and a sample with no `_double` companion keeps its own pitch above 1.5× (see below) |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -244,18 +244,26 @@ sample assigned to slot 1 that no pad could play.
 So a slot became an OCTAVE, which is also how the reference implementation
 (`schwung-munchi-tape`) lays its pads out:
 
-* `kMoveKey[32]` is CHOMPI's own keybed on the 4×8 grid — the lower row of each
-  row pair is the white keys, the row above it the black ones, and the four pads
-  a piano has no key for are silent. Notes that are not pads (a MIDI keyboard,
-  or a host transpose) are read chromatically instead.
-* The `slot` knob owns the lower pair of rows; the pair above it is the next
-  slot (`keybed_slot()`), so the same key can now play a different slot after
+* `keybed_position()` / `keybed_slot()` lay a chromatic ladder on the 4×8 grid:
+  pad 68 is the C the selected slot starts on, the pads count up by semitone
+  left to right and bottom to top, and every pad sounds. Notes that are not pads
+  (a MIDI keyboard, or a host transpose) continue the same ladder.
+* Twelve pads are a slot, so the `slot` knob owns pads 68–79, pads 80–91 are
+  the next slot up and 92–99 the first eight of the one after that
+  (`keybed_slot()`), which is why the same pad can play a different slot after
   the knob moves — hence the slot test added to the CUBBI bind condition, and
   hence `KeyRequest::slot_hint_`: the port resolves the slot, the engine no
   longer assumes `KeyToSlot(key)` when a hint is present.
-* Inside an octave the key is the pitch (`keybed_semitones()`, 0 at the octave's
-  C), fed through the engine's existing `MidiNoteToPlaybackRatio()`. JAMMI keeps
-  its whole-keybed pitch, with the C in the middle of the two octaves at 1.0×.
+* Inside an octave the pad is the pitch (0..11 semitones, 0 at the octave's C),
+  fed through the engine's existing `MidiNoteToPlaybackRatio()`. JAMMI keeps its
+  whole-keybed pitch, measured from pad 80 (twelve pads up, the C the second
+  octave of the surface starts on) at 1.0×, which is also the pad a slot's
+  octave starts on — so pad 80 is a C and a 1.00× in both voices.
+
+The layout the user chose is deliberately NOT the reference's: Munchi Tape puts
+a two-octave piano on the same 4×8 grid, and a piano needs pads for keys that
+do not exist. Twelve pads to a slot has no such pads, and it is also what makes
+a slot's span exact.
 
 The second half of the patch is what that pitch exposes. Above 1.5× the reader
 opens `<name>_double.wav` — the card ships one beside every sample, as the same

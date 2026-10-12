@@ -107,7 +107,7 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 
 | CHOMPI | Move / Schwung |
 | --- | --- |
-| 15 keys (C3–C5) | MIDI notes; two octaves fold onto the 15 keys |
+| 15 keys (C3–C5) | MIDI notes; the pad keybed is one slot per octave (P22) |
 | velocity-sensitive key press | note-on velocity → key request |
 | 8 knobs | `chain_params` — 35 entries, paged by the shadow UI |
 | pitch/speed fader | `varspeed`, `looper_pitch`, `looper_scrub` |
@@ -144,27 +144,33 @@ to poll.
 
 ### Assigning a sample to a slot (one octave of the keybed)
 
-The pads are a two-octave piano, and **one slot is one octave** of it:
+The pads are a **chromatic keybed**, read left to right and bottom to top, and
+**one slot is one octave** — twelve pads — of it:
 
 ```
-row 1   C  D  E  F  G  A  B  C      the slot you selected
-row 2   .  C# D# .  F# G# A# .      (the black keys for those)
-row 3   C  D  E  F  G  A  B  C      the NEXT slot up
-row 4   .  C# D# .  F# G# A# .      (the black keys for those)
+row 1   C   C#  D   D#  E   F   F#  G
+row 2   G#  A   A#  B   C   C#  D   D#
+row 3   E   F   F#  G   G#  A   A#  B
+row 4   C   C#  D   D#  E   F   F#  G
 ```
 
-Bottom-left is MIDI 68 on the Move's 4×8 grid, rows of eight left to right. The
-six pads marked `.` are where a piano has no key; they do nothing. Because the row
-pair is an octave and a slot is an octave, the `slot` knob pages the surface up
-through the slots: `slot` 5 shows slots 5 and 6, `slot` 6 shows 6 and 7, and so
-on. Within an octave the key is the pitch — the octave's C plays the sample at
-its own speed, the keys above it play it faster, up to the B at 1.89× — so the
-one file you assign is playable over that whole octave.
+Bottom-left is MIDI 68 on the Move's 4×8 grid. Every pad sounds, and each row
+carries the ladder on by eight semitones, so the top row is the C two octaves
+above the bottom-left pad. The slot you selected owns the **first twelve pads**;
+the next twelve are the **next slot up**, which is why the surface can show
+three slots at once (with `slot` = 5 it is slots 5 and 6 in full, plus the first
+eight pads of 7). The `slot` knob pages that window through the slots.
 
-This is the model the Munchi Tape reference lays out on its pads, and it is why
-the Samples page's knob is called **Slot (1 octave)** and the page itself
-**Samples (1 slot = 1 octave)**. The device's Help viewer gets the same words
-(`module/help.json`, "A slot is an octave").
+Within an octave the pad is the pitch — the octave's C plays the sample at its
+own speed, the pads above it play it faster, up to the B at 1.89× — so the one
+file you assign is playable over that whole octave. The `octave` knob transposes
+the whole keybed an octave a step.
+
+This is the model the Munchi Tape reference lays out on its pads (it uses a
+piano shape there), and it is why the Samples page's knob is called
+**Slot (1 octave)** and the page itself **Samples (1 slot = 1 octave)**. The
+device's Help viewer gets the same words (`module/help.json`, "A slot is an
+octave").
 
 `slot` selects which slot 1–14 the Samples page is editing (slot 15 is the
 recorder's buffer, and an assignment to it is refused with a message rather
@@ -229,9 +235,10 @@ Two things worth knowing:
   the surface is declared as the keyboard it is. MODULES.md is explicit that an absent
   `pad_layout` is not the same as `"chromatic"`, and a sound generator's
   `module.json` hierarchy is never read — the plugin has to serve it.
-* **No MIDI notes are declared.** Notes arrive where they arrive; the key map is
-  CHOMPI's own keybed, laid out on the pads (`kMoveKey` in `chompi_move.cpp`),
-  with a chromatic fallback for notes that are not one of the 32 pads.
+* **No MIDI notes are declared.** Notes arrive where they arrive; the pads are a
+  chromatic ladder (`keybed_position()` / `keybed_slot()` in `chompi_move.cpp`,
+  twelve pads to a slot), and a note that is not one of the 32 pads continues the
+  same ladder, so a MIDI keyboard plays it too.
 
 ### Mode, bank and slot
 
@@ -239,9 +246,9 @@ The **Setup** page carries the three knobs the hardware has:
 
 | knob | what it does |
 | --- | --- |
-| `voice_mode` | **JAMMI** — one sample for the whole keybed, played at the key's speed: the original tape behaviour. **CUBBI** — one slot per OCTAVE of the keybed, so two samples are on the pads at once. |
+| `voice_mode` | **JAMMI** — one sample for the whole keybed, played at the pad's distance from pad 80: the original tape behaviour. **CUBBI** — one slot per OCTAVE of the keybed, so two whole samples and part of a third are on the pads at once. |
 | `bank` | which set of samples that mode plays: 0–4, i.e. a–e on the card. The card set fills a, b and c. |
-| `slot` | which slot 1–14 is selected (15 is the recording buffer). In CUBBI it is the slot on the LOWER octave of the keybed, and the octave above it is the next slot; the Samples page assigns to it. In JAMMI it is the sample the whole keybed plays. |
+| `slot` | which slot 1–14 is selected (15 is the recording buffer). In CUBBI it is the slot the pads' FIRST TWELVE keys play, and the twelve above them are the next slot up; the Samples page assigns to it. In JAMMI it is the sample the whole keybed plays. |
 | `octave` | transposes the whole keybed, one octave per step, in both modes. |
 
 **Selecting a slot never cuts off what is playing.** The new sample is bound on
@@ -249,8 +256,8 @@ the next key press: one file open per change, instead of a burst of opens while
 a knob is being swept, which is what used to wedge a reader and leave the module
 silent until it was reloaded (VENDORED P14/P17). In JAMMI, move `slot` or `bank`
 and press any key to hear the sample you picked; in CUBBI, move `slot` and the
-lower octave of the pads plays the sample you picked, the upper one the slot
-above it.
+first twelve pads play the sample you picked, the next twelve the slot above
+it.
 
 **Pitch comes from the key, not from a companion file.** Above 1.5× the engine
 wants a `<name>_double.wav` next to the sample — the card ships one for every
@@ -328,7 +335,7 @@ make host && make tools
 #   mode_bank_probe   which sample each mode/bank/slot plays, measured as a
 #                     frequency because every probe sample is a tone
 #   looper_probe      record, play and clear a loop; and where the FX sit
-#   keybed_octave_probe  one slot = one octave of the pads: every piano key's
+#   keybed_octave_probe  one slot = one octave of the pads: every pad's
 #                     slot and pitch, the octave knob, and the >1.5x case
 for p in sample_map_probe slot_knob_probe unload_probe mode_bank_probe looper_probe \
          keybed_octave_probe; do

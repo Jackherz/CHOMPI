@@ -100,9 +100,10 @@ inline void SamplePath(char* dst, size_t dst_len, const char* name)
  *
  *  `mode` is 0 (JAMMI) or 1 (CUBBI), `bank` 0..4, `slot` 1..15 (1-based, as the
  *  engine and KeyToSlot use it). A slot with an assigned sample resolves the
- *  same file for `dbl` — a user's WAV has no prepared double-speed companion,
- *  which is the honest answer: it plays, at the cost of the extra artefact the
- *  doubled copy exists to avoid. */
+ *  same file for `dbl`, because a user's WAV has no prepared double-speed
+ *  companion: it plays, pitched over the whole octave, at the cost of the
+ *  aliasing the doubled copy exists to avoid. `SlotHasDoubleSpeedCopy()` below
+ *  is what keeps the reader from claiming otherwise. */
 void SlotSamplePath(int mode, int bank, int slot, bool dbl, char* dst, size_t dst_len);
 
 /** The convention name alone, ignoring any assignment:
@@ -122,12 +123,15 @@ bool SlotHasOverride(int mode, int bank, int slot);
 /** Does this slot's sample have a prepared 2x-speed companion to swap to?
  *
  *  PORT PATCH P22. The card's convention names come in pairs: `<name>.wav`
- *  plus `<name>_double.wav`, the same audio twice as long, which the reader
- *  opens once varispeed * global pitch passes 1.5x instead of skipping samples
- *  in the ordinary copy. A file the USER assigned to a slot has no such
- *  companion -- `SlotSamplePath()` resolves both names to the one file, so a
- *  reader that claimed double speed would play that file an octave low. Hence:
- *  convention name = yes, assignment = no. */
+ *  plus `<name>_double.wav`, the same audio at twice the SPEED — half the
+ *  frames, the content an octave up (measured 140 Hz in `cubbi_a1.wav` against
+ *  280 Hz in its double) — so that once varispeed * global pitch passes 1.5x
+ *  the reader has samples to read that the ordinary copy, playing that fast,
+ *  would be skipping. Every convention name on the card has a companion (84
+ *  pairs, none missing). A file the USER assigned to a slot has none, and
+ *  `SlotSamplePath()` resolves both names to the one file, so a reader that
+ *  claimed double speed played that file an octave low (measured 321 Hz where
+ *  642 was due). Hence: convention name = yes, assignment = no. */
 bool SlotHasDoubleSpeedCopy(int mode, int bank, int slot);
 
 /** True when `path` lives inside the sample directory — i.e. it is a file this

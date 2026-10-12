@@ -95,9 +95,12 @@ static double goertzel(const double* x, long n, double freq)
     return s1 * s1 + s2 * s2 - coeff * s1 * s2;
 }
 
-static double phase(const char* label, double seconds, int note = 48)
+/* Pad 68 is the C the selected slot starts on (PORT PATCH P22): one slot is
+ * twelve pads, so this note plays the slot the knob shows, at the sample's own
+ * speed. MIDI 48 is not a pad and lands several semitones off that C. */
+static double phase(const char* label, double seconds, int note = 68)
 {
-    uint8_t on[3] = {0x90, (uint8_t)note, 100}; /* C3 (48) -> slot 1 */
+    uint8_t on[3] = {0x90, (uint8_t)note, 100};
     api->on_midi(inst, on, 3, MOVE_MIDI_SOURCE_INTERNAL);
 
     const int blocks = (int)(seconds * MOVE_SAMPLE_RATE / MOVE_FRAMES_PER_BLOCK);
@@ -322,10 +325,11 @@ int main(int argc, char** argv)
     api->set_param(inst, "sample_file", "/tmp/chompi_missing_probe.wav");
     wait_for_scan(1200);
 
-    /* Play the two slots: 55 -> slot 5 (assigned, file gone) and 57 -> slot 6
-     * (no assignment, no file on this card). Neither may create anything. */
-    note_press(55, 0.25);
-    note_press(57, 0.25);
+    /* Play the two slots. With the knob on 5, pad 68 is slot 5 (assigned, file
+     * gone) and pad 80 is slot 6 (no assignment, no file on this card). Neither
+     * may create anything. */
+    note_press(68, 0.25);
+    note_press(80, 0.25);
     wait_for_scan(600);
     struct stat st;
     const bool user_stub = (stat("/tmp/chompi_missing_probe.wav", &st) == 0);
@@ -443,9 +447,10 @@ int main(int argc, char** argv)
     const bool stored_canonical = (strstr(map_after, user_tone) != NULL);
     n = api->get_param(inst, "sample_file", buf, sizeof buf);
     const bool presented_userlib = (n > 0) && (strcmp(buf, via_portal) == 0);
-    /* 57 -> slot 6, i.e. the sample reached through the symlink. The tone
-     * share is the same measurement the phases at the top use. */
-    const double via_portal_share = phase("5. user sample via the portal", 1.0, 57);
+    /* Pad 68 with the knob on 6 is slot 6, i.e. the sample reached through the
+     * symlink, at its own speed. The tone share is the same measurement the
+     * phases at the top use. */
+    const double via_portal_share = phase("5. user sample via the portal", 1.0, 68);
     printf("user sample via portal        : written=%s stored=%s reads-back=%s\n",
            via_portal, stored_canonical ? "canonical" : "AS GIVEN",
            presented_userlib ? "portal path" : (n > 0 ? buf : "-"));

@@ -10,16 +10,16 @@
  * What the port promises (PORT PATCH P22) and what this measures, on a host
  * build with the module's own keybed map:
  *
- *   - the pads are a two-octave piano: the lower row of each row-pair is the
- *     white keys, the row above it the black ones, and the pads a piano has no
- *     key for are silent;
- *   - ONE SLOT IS ONE OCTAVE. The slot the `slot` knob selects owns the lower
- *     pair of rows, the next slot up owns the pair above it, and within an
- *     octave the key's distance from its own C is the playback ratio -- so the
- *     C of a slot plays at 1.00x, the G above it at 1.50x, the B at 1.89x;
+ *   - the pads are a chromatic keybed read left to right and bottom to top:
+ *     pad 68 is the C the selected slot starts on, pad 80 the C two slots'
+ *     worth up, and every pad sounds;
+ *   - ONE SLOT IS ONE OCTAVE -- twelve pads. The slot the `slot` knob selects
+ *     owns the first twelve pads, the next twelve are the next slot up, and
+ *     within an octave the pad's distance from its own C is the playback ratio:
+ *     the C of a slot plays at 1.00x, the G above it at 1.50x, the B at 1.89x;
  *   - the `octave` knob transposes the keybed an octave per step;
- *   - JAMMI is unaffected: one sample for the whole keybed, the C in the middle
- *     of the two octaves at 1.00x.
+ *   - JAMMI is one sample for the whole keybed, with pad 80 (twelve pads up)
+ *     at 1.00x -- the same pad a CUBBI slot's octave starts on.
  *
  * Each slot's file is a distinct tone (200 + 60 * slot Hz at 48 kHz, which the
  * engine's 44.1 kHz output renders 0.919x slower), so "which slot" and "which
@@ -206,54 +206,38 @@ int main(int argc, char** argv)
     /* slot 1 selected: the lower pair of rows is slot 1, the pair above it
      * slot 2. Pads, bottom row first: 68..75 whites, 76..83 blacks, 84..91
      * whites, 92..99 blacks. */
-    printf("\n--- CUBBI, slot knob at 1: lower octave = slot 1, upper = slot 2 ---\n");
+    printf("\n--- CUBBI, slot knob at 1: twelve pads per slot, in rows of eight ---\n");
     set("slot", "1"); settle_ms(200);
-    /* Row 1 (pads 68..75) is the white keys: C D E F G A B, then the C that
-     * starts the next slot. Row 2 (76..83) holds the blacks between them, with
-     * the three pads a piano has no key for. */
-    expect("row 1 C  (octave root)",   68, 1, 0);
-    expect("row 1 D",                  69, 1, 2);
-    expect("row 1 E",                  70, 1, 4);
-    expect("row 1 F",                  71, 1, 5);
-    expect("row 1 G",                  72, 1, 7);
-    expect("row 1 A",                  73, 1, 9);
-    expect("row 1 B",                  74, 1, 11);  /* 1.89x: over the 1.5x line */
-    expect("row 1 C  (top of pair)",   75, 2, 0);   /* also the next slot's C   */
-    expect("row 2 C#",                 77, 1, 1);
-    expect("row 2 D#",                 78, 1, 3);
-    expect("row 2 F#",                 80, 1, 6);   /* 1.41x: just under it     */
-    expect("row 2 G#",                 81, 1, 8);   /* 1.59x                    */
-    expect("row 2 A#",                 82, 1, 10);
-    expect("row 3 C  (octave root)",   84, 2, 0);
-    expect("row 3 G",                  88, 2, 7);   /* 1.50x                    */
-    expect("row 3 A",                  89, 2, 9);   /* 1.68x                    */
-    expect("row 4 C#",                 93, 2, 1);
-    printf("--- and the pads a piano has no key for ---\n");
-    expect_silent("row 2 gap (no key)", 76);
-    expect_silent("row 2 gap (no key)", 79);
-    expect_silent("row 4 gap (no key)", 92);
+    /* Pads 68..79 are slot 1's octave (C..B), pads 80..91 are slot 2's, pads
+     * 92..99 are the first eight of slot 3. Rows are eight pads wide, so the
+     * slot boundary falls inside row 2 (pad 80). */
+    expect("C   (slot 1 root)", 68, 1, 0);
+    expect("C#",                69, 1, 1);
+    expect("D",                 70, 1, 2);
+    expect("E",                 72, 1, 4);
+    expect("F",                 73, 1, 5);
+    expect("G",                 75, 1, 7);
+    expect("A",                 77, 1, 9);
+    expect("A#",                78, 1, 10);
+    expect("B   (1.89x)",       79, 1, 11);
+    expect("C   (slot 2 root)", 80, 2, 0);
+    expect("E",                 84, 2, 4);
+    expect("F#  (1.41x)",       86, 2, 6);
+    expect("G#  (1.59x)",       88, 2, 8);
+    expect("B   (1.89x)",       91, 2, 11);
+    expect("C   (slot 3 root)", 92, 3, 0);
+    expect("G",                 99, 3, 7);
 
     printf("\n--- the octave knob transposes the keybed ---\n");
     set("octave", "1"); settle_ms(300);
-    expect("row 1 C, octave +1",       68, 1, 12); /* 2.00x */
-    expect("row 1 F, octave +1",       71, 1, 17);
+    expect("pad 68, octave +1",          68, 1, 12); /* 2.00x */
+    expect("pad 72, octave +1",          72, 1, 16);
     set("octave", "-1"); settle_ms(300);
-    expect("row 1 C, octave -1",       68, 1, -12); /* 0.50x */
-    expect("row 1 A, octave -1",       73, 1, -3);
+    expect("pad 68, octave -1",          68, 1, -12); /* 0.50x */
+    expect("pad 79, octave -1",          79, 1, -1);
     set("octave", "0"); settle_ms(300);
 
-    /* The CARD's own case, above 1.5x: a convention slot (no assignment) does
-     * have a `_double` companion, and swapping to it must not transpose the
-     * sound. Measured from the shipped card (cubbi_a1.wav vs its double), the
-     * companion is the same audio at TWICE THE SPEED -- half the frames, the
-     * content an octave up (140 Hz becomes 280 Hz) -- so a reader that reads it
-     * at half the rate gets back the original pitch and duration. Hence the
-     * second file here: half the frames of a tone an octave higher.
-     *
-     * Slot 5 is used because slots 1..4 above carry assignments, and an
-     * assignment is exactly the case that has no companion (which is what the
-     * >1.5x checks earlier in this probe cover). */
-    printf("\n--- a slot with a `_double` companion, over 1.5x ---\n");
+    printf("\n--- a `_double` companion, over 1.5x (a convention slot) ---\n");
     write_tone_frames(join(dir, "cubbi_a5.wav"), 200.0 + 60.0 * 5, 48000);
     write_tone_frames(join(dir, "cubbi_a5_double.wav"), 2.0 * (200.0 + 60.0 * 5), 24000);
     /* The slot scan is triggered, not periodic: a file that appears in the
@@ -262,29 +246,30 @@ int main(int argc, char** argv)
      * to the value it already has is that ask. */
     set("sample_dir", dir);
     settle_ms(900);
-    set("slot", "4"); settle_ms(600);   /* slot 5 is the upper octave */
-    expect("row 3 C  (slot 5, 1.00x)",  84, 5, 0);
-    expect("row 3 G  (1.50x, no swap)", 88, 5, 7);
-    expect("row 3 A  (1.68x: the swap)", 89, 5, 9);
+    set("slot", "4"); settle_ms(600);   /* pads 80..91 are slot 5 */
+    expect("C   (slot 5, 1.00x)", 80, 5, 0);
+    expect("D#  (1.19x)",         83, 5, 3);
+    expect("G#  (1.59x: the swap)", 88, 5, 8);
 
-    printf("\n--- the slot knob pages the octaves ---\n");
+    printf("\n--- the slot knob pages the ladder ---\n");
     set("slot", "3"); settle_ms(300);
-    expect("row 1 C, slot 3",          68, 3, 0);
-    expect("row 3 C, slot 4",          84, 4, 0);
+    expect("C, slot 3",          68, 3, 0);
+    expect("C, slot 4",          80, 4, 0);
     set("slot", "14"); settle_ms(300);
-    expect_silent("row 1 C, slot 14 (empty)", 68);
+    expect_silent("slot 14 (empty)", 68);
     set("slot", "1"); settle_ms(300);
 
-    printf("\n--- JAMMI: one sample, the C in the middle at 1.00x ---\n");
+    printf("\n--- JAMMI: one sample, pad 80 at 1.00x ---\n");
     set("voice_mode", "jammi"); settle_ms(600);
     /* JAMMI's slot 1 is its own map entry (mode 0): assign the same tone. */
     load_into(1, dir);
     set("slot", "1"); settle_ms(300);
-    expect("middle C (top of row 1)",  75, 1, 0);
-    expect("middle C (bottom of row 3)", 84, 1, 0);
-    expect("row 3 G",                  88, 1, 7);
-    expect("row 1 C (an octave down)", 68, 1, -12);
-    expect("row 1 A",                  73, 1, -3);
+    expect("(the root)",           80, 1, 0);
+    expect("(-4 st)",              76, 1, -4);
+    expect("(an octave down)",     68, 1, -12);
+    expect("(+8 st, over 1.5x)",   88, 1, 8);
+    expect("(+12 st)",             92, 1, 12);
+    expect("(+19 st, the top row)", 99, 1, 19);
 
     settle_ms(600);
     set("voice_mode", "cubbi"); settle_ms(600);

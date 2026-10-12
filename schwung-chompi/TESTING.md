@@ -193,14 +193,15 @@ tried.
 
 In order, each step isolates one subsystem:
 
-1. **Sample playback**: pads → CUBBI samples. The pads are a piano and
-   **one slot is one octave**: with `slot` = 1, the lower two rows play slot 1
-   (row 1 white keys C D E F G A B C, row 2 their black keys; the six pads
-   with no key do nothing) and the upper two rows play slot 2. The C of a slot
-   plays the sample at its own speed, the B above it at 1.89×; the `slot` knob
-   pages the surface (slot 5 → slots 5 and 6 on the pads), and `octave`
-   transposes the whole keybed. So: assign a file to slot 3, and slot 3 must be
-   playable over a whole octave of pads, at the pitches above.
+1. **Sample playback**: pads → CUBBI samples. The pads are a **chromatic
+   keybed** read left to right and bottom to top, and **one slot is one
+   octave** — twelve pads. With `slot` = 1: pad 68 (bottom-left) is slot 1's C,
+   pads 68–79 are slot 1 (C up to B), pads 80–91 are slot 2, pads 92–99 the
+   first eight of slot 3. Every pad sounds; the octave's C plays the sample at
+   its own speed, the B above it at 1.89×. The `slot` knob pages that window
+   (slot 5 → slots 5, 6 and the start of 7), and `octave` transposes the whole
+   keybed. So: assign a file to slot 3, and slot 3 must be playable over a whole
+   octave of pads, at the pitches above.
 2. **Streaming under a load spike**: hold several keys in a row and listen for
    dropouts. This is the untested bit — on real hardware the reads contend
    with whatever else touches the filesystem. If you hear clicks, the fix is
@@ -215,12 +216,12 @@ In order, each step isolates one subsystem:
    the loop winds down over about a second and then stays silent; recording
    again afterwards must make a fresh loop (not a dub of the cleared one).
 5. **Mode / bank / slot** (Setup page): with the full card set deployed, in
-   **CUBBI** the lower octave plays the selected slot and the upper octave the
-   next one, and the `bank` knob changes both (bank b's low octave sounds
-   different from bank a's). In **JAMMI** every pad
-   plays the *selected* slot at the note's speed: move `slot` and press a key,
-   then move `bank` and press again — each press plays the newly selected
-   sample, and `slot` 15 plays CHOMPI's built-in buffer. Switching
+   **CUBBI** the first twelve pads play the selected slot and the next twelve
+   the slot above it, and the `bank` knob changes both (bank b's bottom-left pad
+   sounds different from bank a's). In **JAMMI** every pad plays the *selected*
+   slot, pitched from pad 80 (that pad is the sample's own speed): move `slot`
+   and press a pad, then move `bank` and press again — each press plays the
+   newly selected sample, and `slot` 15 plays CHOMPI's built-in buffer. Switching
    JAMMI → CUBBI → JAMMI mid-phrase must not leave the module silent.
 6. **FX route** (Setup page, `FX Route`): set a long delay
    (`delay_time` up, `delay_feedback` up), record a short loop in `pre`, then
@@ -269,10 +270,10 @@ Then, with the chain loaded, open the module's editor and go to **Samples**:
    to cancel. If you delete or rename an assigned file afterwards, that key
    goes silent and everything else keeps playing — the assignment is kept, so
    only that slot is affected.
-4. Play the pads for that slot: the LOWER two rows are the slot you selected
-   (slot 1 = the bottom-left C), and the whole octave plays your file — C at its
-   own speed, the keys above it higher. The upper two rows are the next slot up;
-   move `slot` to put a second file there.
+4. Play the pads for that slot: the first twelve pads (bottom-left C, then
+   up the chromatic ladder) are the slot you selected, and the whole octave
+   plays your file — C at its own speed, the pads above it higher. The next
+   twelve pads are the next slot up; move `slot` to put a second file there.
 5. `STRT` / `END` now trim *that* file and the pads draw its waveform.
 6. `CLR` returns the slot to the shipped `samples/cubbi_aN.wav`.
 7. Power-cycle and reload the Set: your assignment is still there.
@@ -333,7 +334,7 @@ and it will be silent rather than noisy, and `debug_view` will name it.
 | One key is silent, its neighbours play | that slot's file is gone or unreadable — the assignment still points at it, so clear it (`CLR`) or reassign |
 | Only the first key or two make sound, the rest of the Samples page is silent | the device is still on the three bundled WAVs — `make deploy-full` (this is the classic one; step 0 has the whole story) |
 | In JAMMI, `slot`/`bank` seem to do nothing | they bind on the **next key press** by design (VENDORED P14/P17), and slot 15 is the RAM buffer, not a file — press a key after turning the knob, and check `debug_voice`'s summary line (`mode=… bank=… sel=…`) |
-| Switching JAMMI → CUBBI goes silent | CUBBI pads need their slot's file: with only the bundled samples there are two playable octaves (slots 1–2, i.e. the whole surface). `make deploy-full`, then check `debug_files` for `cubbi/0:110000000000001…` |
+| Switching JAMMI → CUBBI goes silent | CUBBI pads need their slot's file: with only the bundled samples the first two octaves play (pads 68–91); pads 92–99 are slot 3 and stay silent until the card set is there. `make deploy-full`, then check `debug_files` for `cubbi/0:110000000000001…` |
 | Everything works, output clips | `volume`/`gain`/`saturate`; CHOMPI's defaults are hot |
 | Browser opens, picking a file does nothing | the read-back key: `ssh ableton@move.local` then ask the plugin — `sample_file` must show the path, `sample_map` the assignment |
 | Assignment gone after a power cycle | `<module dir>/samples/samples.map` — check it exists and the module dir is writable |

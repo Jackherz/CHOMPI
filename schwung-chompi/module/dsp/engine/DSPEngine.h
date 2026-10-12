@@ -682,7 +682,7 @@ namespace daisy
          *         key is (the hardware's one-key-one-slot keybed). 1..15 = the
          *         caller has already resolved it, which is what the port does:
          *         on Move a slot is an OCTAVE of the keybed (chompi_move.cpp:
-         *         keybed_key() / keybed_slot()), so which slot a press plays
+         *         keybed_position() / keybed_slot()), so which slot a press plays
          *         depends on the note, not on the key id.
          */
         void StartPlayback(float transpose_nn, int key, float vel, int slot_hint = 0)

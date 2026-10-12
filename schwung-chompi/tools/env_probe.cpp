@@ -224,13 +224,13 @@ static void measure(const char* label, double* fade_in, double* release_s)
 }
 
 
-/* PORT PATCH P22: one slot is one OCTAVE of the pads, so the two slots the
- * CUBBI checks below use are the two octave roots of the keybed: the bottom-left
- * C, which plays whatever `slot` selects, and the C an octave above it, which
- * plays the NEXT slot up. (These used to be MIDI 48 and 50, one key per slot;
- * those notes are not pads at all and now take the chromatic fallback.) */
+/* PORT PATCH P22: one slot is one OCTAVE -- twelve pads -- so the two slots the
+ * CUBBI checks below use are two octave roots of the keybed: the bottom-left C,
+ * which plays whatever `slot` selects, and the C twelve pads up, which plays the
+ * NEXT slot. (These used to be MIDI 48 and 50, one key per slot; those notes are
+ * not pads at all and now take the chromatic fallback.) */
 static const int kPadOfSelectedSlot = 68; /* bottom-left pad, the octave root */
-static const int kPadOfNextSlot     = 84; /* the C one octave up             */
+static const int kPadOfNextSlot     = 80; /* the C twelve pads up           */
 
 /* A blocking wait that does not need the render loop. */
 static void sleep_ms(int ms)
@@ -265,7 +265,12 @@ struct Reading
     double early, mid, held, peak, tail;
 };
 
-static int kReadingNote = 48;
+/* PORT PATCH P22: pad 68 is an octave below JAMMI's root (pad 80), so it is
+ * the 0.5x this probe's file-length arithmetic was written for ("C3 at 0.5x,
+ * the 0.30 s file runs out around 0.70 s"). MIDI 48 is not a pad; on the
+ * chromatic ladder it lands 32 semitones down and the file is still playing
+ * when the one-shot window looks. In CUBBI the same pad is slot 1's own speed. */
+static int kReadingNote = 68;
 
 /* Is any voice still making sound? Reads the engine's own per-voice state. */
 static bool any_voice_playing()
@@ -612,8 +617,8 @@ int main(int argc, char** argv)
         set("sustain", combos[i].sustain);
         sleep_ms(600);
 
-        /* Key down at 0.1 s, held to 1.5 s. The file is 0.30 s and JAMMI plays
-         * C3 at 0.5x, so it runs out around 0.70 s: anything sounding at
+        /* Key down at 0.1 s, held to 1.5 s. The file is 0.30 s and pad 68 plays
+         * it at 0.5x, so it runs out around 0.70 s: anything sounding at
          * 1.0-1.4 s got there by looping. */
         capture(1.8, kReadingNote, 0.1, 1.5, env, 180);
         const double settled = level_between(env, 180, 1.00, 1.40);

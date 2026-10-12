@@ -185,12 +185,12 @@ int main(int argc, char** argv)
 
     /* n.b. the engine runs at 44.1 kHz while these files are 48 kHz, so every
      * tone lands at 0.919x its nominal frequency (see sample_map_probe), and
-     * JAMMI additionally transposes by the key (C3 -> 0.5). */
-    /* PORT PATCH P22: CUBBI's pads are a piano and one slot is one OCTAVE, so
-     * the slot a press plays comes from the octave of the pad, not from the pad
-     * itself: pad 68 (the bottom-left C) is the slot the `slot` knob selects and
-     * pad 84 (the C an octave up) is the NEXT slot. The key's distance from its
-     * octave's C is the pitch, hence the x1.4983 factors (a G, +7 semitones).
+     * JAMMI additionally transposes by the pad. */
+    /* PORT PATCH P22: one slot is one OCTAVE -- twelve pads -- and the pads are a
+     * chromatic ladder read left to right and bottom to top, so pad 68 is the
+     * slot the `slot` knob selects and pad 80 is the NEXT slot up. A pad's
+     * distance from its own octave's C is the pitch, hence the x1.4983 factors
+     * (a G, +7 semitones: pad 75 in the first octave, pad 87 in the second).
      * The external-note presses this used to do (MIDI 48/50/52) are not the
      * device's pads at all - they fall back to a chromatic reading, which is a
      * different (and separately probed) path. */
@@ -199,61 +199,65 @@ int main(int argc, char** argv)
     settle_ms(800);
     set("slot", "1");
     settle_ms(600);
-    press_note("cubbi slot 1, bottom-left pad C3 (slot 1: 440)", 68, 404.25);
-    press_note("cubbi slot 1, pad G3 (+7 st)", 72, 404.25 * 1.4983);
-    press_note("cubbi slot 2, pad C4 (480)", 84, 441.00);
-    press_note("cubbi slot 2, pad G4 (+7 st)", 88, 441.00 * 1.4983);
+    press_note("cubbi slot 1, bottom-left pad (slot 1: 440)", 68, 404.25);
+    press_note("cubbi slot 1, pad G (+7 st)", 75, 404.25 * 1.4983);
+    press_note("cubbi slot 2, pad 80 (480)", 80, 441.00);
+    press_note("cubbi slot 2, pad G (+7 st)", 87, 441.00 * 1.4983);
     set("slot", "3");
     settle_ms(600);
-    press_note("cubbi slot 3, pad C3 (520)", 68, 477.75);
-    press_note("cubbi slot 4, pad C4 (560)", 84, 514.50);
+    press_note("cubbi slot 3, pad 68 (520)", 68, 477.75);
+    press_note("cubbi slot 4, pad 80 (560)", 80, 514.50);
 
     printf("\n--- bank changes which set the pads play ---------------------------\n");
     set("bank", "1");
     set("slot", "1");
     settle_ms(800);
-    press_note("cubbi bank b, pad C3 (bank b slot 1: 640)", 68, 588.00);
-    press_note("cubbi bank b, pad C4 (bank b slot 2: 680)", 84, 624.75);
+    press_note("cubbi bank b, pad 68 (bank b slot 1: 640)", 68, 588.00);
+    press_note("cubbi bank b, pad 80 (bank b slot 2: 680)", 80, 624.75);
     set("bank", "0");
     settle_ms(800);
-    press_note("cubbi bank a again, pad C3 (440)", 68, 404.25);
+    press_note("cubbi bank a again, pad 68 (440)", 68, 404.25);
 
     printf("\n--- JAMMI: one sample, played chromatically -----------------------\n");
     set("voice_mode", "jammi");
     settle_ms(800);
     set("slot", "1");
     settle_ms(800);
-    press_note("jammi slot 1 (840), key C3", 48, 385.90);
-    press_note("jammi slot 1 (840), key E3 (x1.26)", 52, 486.10);
+    /* JAMMI's own speed is pad 80 (PORT PATCH P22), so that pad is the 840 Hz
+     * file at the 0.919x of the rate mismatch, and four pads up is a major
+     * third (x1.2599). */
+    press_note("jammi slot 1 (840), pad 80", 80, 771.75);
+    press_note("jammi slot 1 (840), pad 84 (x1.2599)", 84, 771.75 * 1.2599);
     set("slot", "2");
     settle_ms(800);
-    press_note("jammi slot 2 (880), key C3", 48, 404.25);
+    press_note("jammi slot 2 (880), pad 80", 80, 808.50);
     set("slot", "3");
     settle_ms(800);
-    press_note("jammi slot 3 (920), key C3", 48, 422.60);
+    press_note("jammi slot 3 (920), pad 80", 80, 845.25);
     /* Bank b's set in this tone directory only has slot 1, so select it before
      * switching banks -- the same thing a user does. */
     set("slot", "1");
     set("bank", "1");
     settle_ms(800);
-    press_note("jammi bank b slot 1 (1000), key C3", 48, 459.40);
+    press_note("jammi bank b slot 1 (1000), pad 80", 80, 918.75);
 
     printf("\n--- slot 15 is the recording buffer, not a file -------------------\n");
     /* Slot 15 plays CHOMPI's built-in RAM buffer (a decaying tone at 523 Hz, so
-     * half speed at C3). What matters here is the bookkeeping: the voice must
-     * know it is on the buffer, or moving back to a card slot leaves it
-     * reading the wrong thing forever. */
+     * half speed twelve pads below the JAMMI root). What matters here is the
+     * bookkeeping: the voice must know it is on the buffer, or moving back to a
+     * card slot leaves it reading the wrong thing forever. */
     set("slot", "15");
     settle_ms(600);
     /* FillDefaultSample() writes its tone with a .5 factor -- 261.6 Hz at the
-     * buffer's rate -- so C3 (x0.5) lands at 130.8, not 261. */
-    press_note("jammi slot 15 (RAM buffer), key C3", 48, 130.8);
+     * buffer's rate -- so the pad an octave below the root (x0.5) lands at
+     * 130.8, not 261. */
+    press_note("jammi slot 15 (RAM buffer), pad 68", 68, 130.8);
     check("the voice reads the RAM buffer on slot 15", strstr(dbg(), "ram1 slot15") != nullptr,
           "(debug_voice)");
     set("slot", "1");
     settle_ms(600);
     /* Still in bank b from the section above, so slot 1 is jammi_b1 (1000 Hz). */
-    press_note("back to slot 1 (bank b: 1000), key C3", 48, 459.4);
+    press_note("back to slot 1 (bank b: 1000), pad 80", 80, 918.75);
     check("and reads the card sample again on slot 1", strstr(dbg(), "ram0 slot1") != nullptr,
           "(debug_voice)");
 
@@ -264,7 +268,7 @@ int main(int argc, char** argv)
     settle_ms(800);
     set("slot", "3");
     settle_ms(600);
-    press_note("cubbi bank a, pad C3  (slot 3: 520)", 68, 477.75);
+    press_note("cubbi bank a, pad 68  (slot 3: 520)", 68, 477.75);
     printf("\n%s (%d failure%s in %d checks)\n", failures ? "VERDICT: FAIL" : "VERDICT: PASS",
            failures, failures == 1 ? "" : "s", checks);
     return failures ? 1 : 0;

@@ -28,7 +28,8 @@
 
 #include "host/plugin_api_v1.h"
 
-#define NOTE_C3 48 /* slot 1 */
+#define NOTE_C3 48 /* not a pad: the reading below just needs a note that
+                      * sounds slot 1 (the chromatic fallback clamps to it) */
 
 static uint8_t mailbox[8 * 1024 * 1024] __attribute__((aligned(4096)));
 
@@ -228,14 +229,14 @@ int main(int argc, char** argv)
     printf("fds after the knob sweep: %d\n", fd_count());
 
     /* The pads, which is what the user actually plays. PORT PATCH P22: one slot
-     * is one OCTAVE of the pads, so with `slot` at 1 the bottom-left C is slot
-     * 1's octave root and the C an octave above it is slot 2's; the two are the
-     * only slots this directory has files for (on a full card the rest are
-     * present, and the pads for them are silent here for a reason that has
-     * nothing to do with any of this). */
+     * is one OCTAVE -- twelve pads -- so with `slot` at 1 the bottom-left pad is
+     * slot 1's octave root and pad 80 is slot 2's; the two are the only slots
+     * this directory has files for (on a full card the rest are present, and the
+     * pads for them are silent here for a reason that has nothing to do with any
+     * of this). */
     set_slot(1);
     press_note("7. pad 68 (slot 1, bottom-left C)", 68, 0.4);
-    press_note("7. pad 84 (slot 2, the C above)", 84, 0.4);
+    press_note("7. pad 80 (slot 2, the C twelve pads up)", 80, 0.4);
     dump_voices("after two keys");
 
     /* Every key press calls SetVoiceSlot(), exactly like the knob used to --
@@ -254,7 +255,7 @@ int main(int argc, char** argv)
 
     for(int i = 0; i < 30; i++)
     {
-        press_note(NULL, (i & 1) ? 84 : 68, 0.05);
+        press_note(NULL, (i & 1) ? 80 : 68, 0.05);
         usleep(15 * 1000);
     }
     printf("fds after fast playing: %d\n", fd_count());
@@ -274,9 +275,9 @@ int main(int argc, char** argv)
     wait_ms(300);
     api->set_param(inst, "sample_file", "/tmp/chompi_vanished.wav");
     wait_ms(1200);
-    set_slot(1); /* back to the octave pair: lower = slot 1, upper = slot 2 */
+    set_slot(1); /* back to the window: pads 68.. are slot 1, pads 80.. slot 2 */
     wait_ms(300);
-    press_note("10. pad 84 (slot 2's file is gone)", 84, 0.4);
+    press_note("10. pad 80 (slot 2's file is gone)", 80, 0.4);
     const double after_vanished = press_note("10. pad 68 (slot 1) still plays", 68, 0.4);
     if(after_vanished <= base * 0.4) { printf("   a missing file silenced the module\n"); fails++; }
     printf("fds after the vanished file: %d\n", fd_count());
