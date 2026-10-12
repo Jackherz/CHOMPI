@@ -1,0 +1,83 @@
+{
+  "title": "CHOMPI",
+  "children": [
+    {
+      "title": "A slot is an octave",
+      "lines": [
+        "ONE SLOT = ONE OCTAVE of the keybed.",
+        "",
+        "The 32 pads are laid out like a keyboard, bottom row first:",
+        "  row 1  C  D  E  F  G  A  B  C   (white keys)",
+        "  row 2  .  C# D# .  F# G# A# .   (black keys, above them)",
+        "  row 3  C  D  E  F  G  A  B  C   (white keys)",
+        "  row 4  .  C# D# .  F# G# A# .   (black keys, above them)",
+        "The six pads shown as '.' are where a piano has no key; they do nothing.",
+        "",
+        "The slot selected with the Slot knob owns the LOWER pair of rows.",
+        "The pair above it is the NEXT slot up. So with Slot 5 the surface",
+        "shows slots 5 and 6, with Slot 6 it shows 6 and 7, and so on: the",
+        "knob pages the pads up through the sample slots.",
+        "",
+        "Inside an octave the KEY is what sets the pitch: the octave's C",
+        "plays the sample at its own speed, the keys above it play it",
+        "higher - up to the B, at 1.89x. Pressing the C of the upper pair",
+        "is the same as the C at the end of the lower pair.",
+        "",
+        "The Octave knob transposes the whole keybed, one octave a step.",
+        "Slot 15 is the recording buffer: whatever the Recorder page's take",
+        "left there plays from the keybed like any other slot."
+      ]
+    },
+    {
+      "title": "Loading your own samples",
+      "lines": [
+        "Samples page: Slot picks the slot, Sample opens the browser, and",
+        "what you pick is what that slot plays from then on.",
+        "",
+        "The browser starts at /data/UserData/chompi-samples:",
+        "  Built-in      the module's own wavs (the CHOMPI card set)",
+        "  User Library  your own files, already on the Move",
+        "Copy WAV or AIFF files to User Library however you like; they show",
+        "up in the browser, and any rate, bit depth or channel count plays.",
+        "",
+        "An assignment is kept per mode, bank and slot, and survives a",
+        "reload of the chain. Clear Slot puts the slot back to the built-in",
+        "sample it shipped with.",
+        "",
+        "Slot 15 is the recording buffer - assign to slots 1-14."
+      ]
+    },
+    {
+      "title": "JAMMI and CUBBI",
+      "lines": [
+        "CUBBI: one slot per octave of the keybed (see the first topic), so",
+        "up to two different samples play at once on the 32 pads.",
+        "",
+        "JAMMI: one sample plays the WHOLE keybed, pitched by the key. The C",
+        "in the middle of the two octaves is the sample at its own speed;",
+        "the pads below it play it slower, the ones above it faster. The",
+        "Slot knob chooses which sample that is.",
+        "",
+        "Mode and Bank are on the Setup page. Each slot remembers its own",
+        "Tape page values (attack, decay, start, end, loop, gain, pan), so",
+        "changing slots changes what those knobs show and do."
+      ]
+    },
+    {
+      "title": "Tape, looper, recorder",
+      "lines": [
+        "Tape: the CHOMPI tape controls - reverse, sustain, auto-loop,",
+        "attack, decay, start, end, gain, pan - applied to the slot's",
+        "sample. They are remembered per slot.",
+        "",
+        "Looper: records the module's output into a 60 s buffer, plays it",
+        "back with pitch/scrub/dub controls. Loop Rec starts it, Loop Play",
+        "starts playback, Clear Loop empties it.",
+        "",
+        "Recorder: Chompi Rec records the audio input (Input, In Gain) to",
+        "temp_rec.wav, which lands in slot 15 - the keybed's buffer.",
+        "Monitor passes the input through to the output."
+      ]
+    }
+  ]
+}

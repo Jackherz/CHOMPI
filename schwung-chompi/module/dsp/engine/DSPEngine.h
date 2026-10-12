@@ -73,17 +73,22 @@ namespace daisy
         float transpose_nn_;
         int key_;
         float vel_;
+        /** PORT PATCH P22: the slot this press plays, when the caller knows it
+         *  better than KeyToSlot(key) does. 0 = "ask KeyToSlot()". */
+        int slot_hint_;
 
         /** constructor for full request data */
         KeyRequest(Type type,
                     float transpose_nn,
                     int key,
-                    float vel
+                    float vel,
+                    int slot_hint = 0
                   )
             : type_(type),
                 transpose_nn_(transpose_nn),
                 key_(key),
-                vel_(vel)
+                vel_(vel),
+                slot_hint_(slot_hint)
         {
         }
 
@@ -92,7 +97,8 @@ namespace daisy
             : type_(Type::DUMMY),
                 transpose_nn_(0.f),
                 key_(0),
-                vel_(127.f)
+                vel_(127.f),
+                slot_hint_(0)
         {
         }
 
@@ -655,11 +661,31 @@ namespace daisy
                 playing_key[i] = 0;
         }
 
+        /** PORT PATCH P22 -- tell a voice, before it opens a file, whether that
+         *  file has the card's prepared 2x-speed companion. The reader swaps to
+         *  it above 1.5x; a user's assignment has none, and claiming otherwise
+         *  played it an octave low (see SampleReader.h, double_available). */
+        void BindDoubleAvailability(size_t voice, int mode, int bank, size_t slot)
+        {
+            if(voice >= kMaxPoly)
+                return;
+            chompi_voice[voice].SetDoubleAvailable(
+                chompi::SlotHasDoubleSpeedCopy(mode, bank, (int)slot));
+        }
+
         /** @brief Voice stealing algorithm.
          *  Starts playback of sample in slot at desired playback ratio
          *  @param transpose_nn MIDI note number transposition to play w/ middle C being 0
+         *  @param key the identity of the key that was pressed (CHOMPI button id
+         *         from the panel, or the host's pad note -- see slot_hint)
+         *  @param slot_hint PORT PATCH P22: 0 = ask KeyToSlot() which slot this
+         *         key is (the hardware's one-key-one-slot keybed). 1..15 = the
+         *         caller has already resolved it, which is what the port does:
+         *         on Move a slot is an OCTAVE of the keybed (chompi_move.cpp:
+         *         keybed_key() / keybed_slot()), so which slot a press plays
+         *         depends on the note, not on the key id.
          */
-        void StartPlayback(float transpose_nn, int key, float vel)
+        void StartPlayback(float transpose_nn, int key, float vel, int slot_hint = 0)
         {
             /** Is this key already playing? */
             int free_idx = -1;
@@ -722,8 +748,18 @@ namespace daisy
             {
                 char name_buffer[256];
                 char name_buffer_dbl[256];
-                size_t slot = KeyToSlot(key);
-                if(slot == kSlotNone)
+                /* PORT PATCH P22: the port resolves the slot itself, because in
+                 * CUBBI on Move a slot is an octave of the keybed rather than
+                 * one key. KeyToSlot() stays the answer for a request that
+                 * carries no hint (the hardware panel, and every probe that
+                 * drives button ids). */
+                size_t slot;
+                if(slot_hint > 0)
+                    slot = (size_t)slot_hint;
+                else
+                    slot = KeyToSlot(key);
+
+                if(slot == kSlotNone || slot < 1 || slot > kSlotCount)
                     return;
 
                 if(!file_exists[1][bank[int(voice_mode)]][slot - 1])
@@ -734,11 +770,21 @@ namespace daisy
                     (playing_key[free_idx] != key 
                         || !chompi_voice[free_idx].GetCubbiMode()
                         || chompi_voice[free_idx].GetBank() != bank[int(voice_mode)]
+                        /* PORT PATCH P22: the bound SLOT is part of the test
+                         * now. It used to be implied by the key -- one key,
+                         * one slot, always -- but a slot is an octave of the
+                         * keybed here, so moving the slot knob moves the pad
+                         * to a different file while its key id stays put. The
+                         * voice used to keep playing the file it already had
+                         * (measured: the C of the keybed still ringing slot 1's
+                         * tone after the knob moved to 3). */
+                        || chompi_voice[free_idx].GetSlot() != (int)slot
                         || copy_occurred
                     ))
                 {
                     GetFileNameForSlot(slot, bank[int(voice_mode)], voice_mode, name_buffer);
                     GetFileNameForSlot(slot, bank[int(voice_mode)], voice_mode, name_buffer_dbl, true);
+                    BindDoubleAvailability(free_idx, int(voice_mode), bank[int(voice_mode)], slot);
                     chompi_voice[free_idx].OpenFile(name_buffer, name_buffer_dbl, true); 
                     chompi_voice[free_idx].SetSlot(slot); 
                     chompi_voice[free_idx].SetUsingRam(false, true); 
@@ -805,6 +851,7 @@ namespace daisy
                     char name_buffer_dbl[256];
                     GetFileNameForSlot(sel, sel_bank, voice_mode, name_buffer);
                     GetFileNameForSlot(sel, sel_bank, voice_mode, name_buffer_dbl, true);
+                    BindDoubleAvailability(free_idx, int(voice_mode), sel_bank, sel);
                     chompi_voice[free_idx].OpenFile(name_buffer, name_buffer_dbl, true);
                     chompi_voice[free_idx].SetSlot(sel);
                     chompi_voice[free_idx].SetUsingRam(false, true);
@@ -834,7 +881,20 @@ namespace daisy
                 chompi_voice[free_idx].SetVarispeed(MidiNoteToPlaybackRatio(transpose_nn));
             }
             else if(voice_mode == VoiceMode::CUBBI)
-                chompi_voice[free_idx].SetVarispeed(1.f);
+            {
+                /* PORT PATCH P22: in CUBBI each slot is an octave of the
+                 * keybed, so the key WITHIN that octave is what the sample is
+                 * pitched by -- root C at 1.0x, B above it at 1.89x. The port
+                 * sends that interval (0..11 semitones) as transpose_nn, which
+                 * is the same field JAMMI uses for its whole-keyboard pitch.
+                 * A hinted request is therefore pitched; a hardware request
+                 * (slot_hint 0, one key = one slot, one sample per pad) keeps
+                 * the firmware's 1.0x. */
+                if(slot_hint > 0)
+                    chompi_voice[free_idx].SetVarispeed((float)MidiNoteToPlaybackRatio((int)transpose_nn));
+                else
+                    chompi_voice[free_idx].SetVarispeed(1.f);
+            }
 
 
             chompi_voice[free_idx].StartPlaying();
@@ -859,7 +919,7 @@ namespace daisy
                 KeyRequest req = request_fifo.PopFront();
                 
                 if (req.type_ == KeyRequest::Type::START)
-                    StartPlayback(req.transpose_nn_, req.key_, req.vel_);
+                    StartPlayback(req.transpose_nn_, req.key_, req.vel_, req.slot_hint_);
                 else if (req.type_ == KeyRequest::Type::STOP)
                     StopPlayback(req.key_);
             }
@@ -1699,6 +1759,7 @@ namespace daisy
             {
                 if(idx != 15)
                 {
+                    BindDoubleAvailability(i, int(voice_mode), bank[int(voice_mode)], idx);
                     chompi_voice[i].OpenFile(name_buffer, name_buffer_dbl, true);
                 }
 

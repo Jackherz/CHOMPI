@@ -257,6 +257,12 @@ namespace daisy
             auto_loop = true;
             sustain = true;
 
+            /* A voice that has not been told otherwise keeps the firmware's
+             * assumption: the card ships a `_double` for every sample. The
+             * engine clears it for the slots a user has assigned their own
+             * file to (PORT PATCH P22). */
+            double_available = true;
+
             SetGlobalPitch(1.f);
             SetVarispeed(1.f);
             SetReverse(false);
@@ -351,7 +357,7 @@ namespace daisy
             if(fname_rx_dbl != filename_dbl)
                 strcpy(fname_rx_dbl, filename_dbl);
 
-            bool open_double = varispeed_target * global_pitch > 1.5f;
+            bool open_double = varispeed_target * global_pitch > 1.5f && double_available;
             double_speed = open_double;
 
             if(f_size(&fptr_read) != 0)
@@ -777,7 +783,8 @@ namespace daisy
             if(is_knob && double_speed_ctr > 0)
                 return;
 
-            bool to_double = varispeed_target * global_pitch > 1.5f && !double_speed;
+            bool to_double = varispeed_target * global_pitch > 1.5f && !double_speed
+                             && double_available;
             bool to_normal = varispeed_target * global_pitch <= 1.5f && double_speed;
             if(to_double || to_normal)
             {
@@ -1079,6 +1086,26 @@ namespace daisy
         bool double_speed;
         uint32_t double_speed_ctr;
         float old_speed;
+
+        /** PORT PATCH P22: does this file HAVE a 2x companion to swap to?
+         *
+         * The card ships `<name>_double.wav` next to every `<name>.wav`: the
+         * same audio at twice the speed (half the frames, the pitch an octave
+         * up, measured 140 Hz -> 280 Hz on cubbi_a1), which the reader reads at
+         * half the rate. It is there so that above 1.5x the samples it needs
+         * are already in the file, instead of being skipped over in the
+         * ordinary one. The firmware assumes the pair always exists (it is its
+         * own card), so a user's WAV -- which has no companion -- used to fool
+         * it twice over: the >1.5x open re-opened THE SAME file while
+         * PlaybackRatio still claimed double speed, and the voice came out an
+         * octave low (measured: 642 Hz expected, 321 Hz heard).
+         *
+         * A file with no companion plays its high notes from the one copy it
+         * has: the pitch is right, the top octave of a slot aliases a little,
+         * and nothing re-opens mid-note. */ 
+        bool double_available;
+        void SetDoubleAvailable(bool avail) { double_available = avail; }
+        bool GetDoubleAvailable() const { return double_available; }
         bool note_changed, pitch_changed;
 
         /** Varispeed handling */

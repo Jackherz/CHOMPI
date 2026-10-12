@@ -120,7 +120,7 @@ Expect four sections. The important ones:
 | key | expected |
 | --- | --- |
 | `chain_params` | 2815 bytes, 35 `{…}` entries, *starts with `[` and ends with `]`* |
-| `ui_hierarchy` | 1864 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
+| `ui_hierarchy` | 1934 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
 | `split_voices` | empty (`(none)`) — that is the correct answer, not a failure |
 | `state` | 16-key flat JSON |
 
@@ -193,8 +193,14 @@ tried.
 
 In order, each step isolates one subsystem:
 
-1. **Sample playback**: keys/pads → CUBBI samples. Slot 1 = C3, slot 2 = D3…
-   (15 keys, two octaves folded; `octave` shifts the window).
+1. **Sample playback**: pads → CUBBI samples. The pads are a piano and
+   **one slot is one octave**: with `slot` = 1, the lower two rows play slot 1
+   (row 1 white keys C D E F G A B C, row 2 their black keys; the six pads
+   with no key do nothing) and the upper two rows play slot 2. The C of a slot
+   plays the sample at its own speed, the B above it at 1.89×; the `slot` knob
+   pages the surface (slot 5 → slots 5 and 6 on the pads), and `octave`
+   transposes the whole keybed. So: assign a file to slot 3, and slot 3 must be
+   playable over a whole octave of pads, at the pitches above.
 2. **Streaming under a load spike**: hold several keys in a row and listen for
    dropouts. This is the untested bit — on real hardware the reads contend
    with whatever else touches the filesystem. If you hear clicks, the fix is
@@ -209,8 +215,9 @@ In order, each step isolates one subsystem:
    the loop winds down over about a second and then stays silent; recording
    again afterwards must make a fresh loop (not a dub of the cleared one).
 5. **Mode / bank / slot** (Setup page): with the full card set deployed, in
-   **CUBBI** each key plays its own sample and the `bank` knob changes all of
-   them (bank b's key 1 sounds different from bank a's). In **JAMMI** every key
+   **CUBBI** the lower octave plays the selected slot and the upper octave the
+   next one, and the `bank` knob changes both (bank b's low octave sounds
+   different from bank a's). In **JAMMI** every pad
    plays the *selected* slot at the note's speed: move `slot` and press a key,
    then move `bank` and press again — each press plays the newly selected
    sample, and `slot` 15 plays CHOMPI's built-in buffer. Switching
@@ -262,7 +269,10 @@ Then, with the chain loaded, open the module's editor and go to **Samples**:
    to cancel. If you delete or rename an assigned file afterwards, that key
    goes silent and everything else keeps playing — the assignment is kept, so
    only that slot is affected.
-4. Play the key for that slot (slot 1 = C3): it plays your file.
+4. Play the pads for that slot: the LOWER two rows are the slot you selected
+   (slot 1 = the bottom-left C), and the whole octave plays your file — C at its
+   own speed, the keys above it higher. The upper two rows are the next slot up;
+   move `slot` to put a second file there.
 5. `STRT` / `END` now trim *that* file and the pads draw its waveform.
 6. `CLR` returns the slot to the shipped `samples/cubbi_aN.wav`.
 7. Power-cycle and reload the Set: your assignment is still there.
@@ -323,7 +333,7 @@ and it will be silent rather than noisy, and `debug_view` will name it.
 | One key is silent, its neighbours play | that slot's file is gone or unreadable — the assignment still points at it, so clear it (`CLR`) or reassign |
 | Only the first key or two make sound, the rest of the Samples page is silent | the device is still on the three bundled WAVs — `make deploy-full` (this is the classic one; step 0 has the whole story) |
 | In JAMMI, `slot`/`bank` seem to do nothing | they bind on the **next key press** by design (VENDORED P14/P17), and slot 15 is the RAM buffer, not a file — press a key after turning the knob, and check `debug_voice`'s summary line (`mode=… bank=… sel=…`) |
-| Switching JAMMI → CUBBI goes silent | CUBBI keys need their slot's file: with only the bundled samples there are two playable keys (C3/D3). `make deploy-full`, then check `debug_files` for `cubbi/0:110000000000001…` |
+| Switching JAMMI → CUBBI goes silent | CUBBI pads need their slot's file: with only the bundled samples there are two playable octaves (slots 1–2, i.e. the whole surface). `make deploy-full`, then check `debug_files` for `cubbi/0:110000000000001…` |
 | Everything works, output clips | `volume`/`gain`/`saturate`; CHOMPI's defaults are hot |
 | Browser opens, picking a file does nothing | the read-back key: `ssh ableton@move.local` then ask the plugin — `sample_file` must show the path, `sample_map` the assignment |
 | Assignment gone after a power cycle | `<module dir>/samples/samples.map` — check it exists and the module dir is writable |

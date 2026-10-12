@@ -224,9 +224,13 @@ static void measure(const char* label, double* fade_in, double* release_s)
 }
 
 
-/* The Move's note for CHOMPI button 15 / 8: slot 1 and slot 2 in CUBBI. */
-static const int kNoteSlot1 = 48; /* 0x30 */
-static const int kNoteSlot2 = 50; /* 0x32 -> button 8 -> KeyToSlot == 2 */
+/* PORT PATCH P22: one slot is one OCTAVE of the pads, so the two slots the
+ * CUBBI checks below use are the two octave roots of the keybed: the bottom-left
+ * C, which plays whatever `slot` selects, and the C an octave above it, which
+ * plays the NEXT slot up. (These used to be MIDI 48 and 50, one key per slot;
+ * those notes are not pads at all and now take the chromatic fallback.) */
+static const int kPadOfSelectedSlot = 68; /* bottom-left pad, the octave root */
+static const int kPadOfNextSlot     = 84; /* the C one octave up             */
 
 /* A blocking wait that does not need the render loop. */
 static void sleep_ms(int ms)
@@ -576,11 +580,13 @@ int main(int argc, char** argv)
     sleep_ms(600);
 
     Reading pad1{}, pad2{}, pad1b{};
-    press(kNoteSlot1, &pad1);
+    set("slot", "1"); /* the octave the pads show starts at slot 1 */
+    sleep_ms(300);
+    press(kPadOfSelectedSlot, &pad1);
     print_reading("pad 1 (slot 1, attack 0.75)", pad1);
-    press(kNoteSlot2, &pad2);
+    press(kPadOfNextSlot, &pad2);
     print_reading("pad 2 (slot 2, attack 0.00)", pad2);
-    press(kNoteSlot1, &pad1b);
+    press(kPadOfSelectedSlot, &pad1b);
     print_reading("pad 1 again", pad1b);
     check("CUBBI: pad 1 fades in, pad 2 does not",
           pad1.peak > 0.01 && pad1.early / pad1.peak < 0.45

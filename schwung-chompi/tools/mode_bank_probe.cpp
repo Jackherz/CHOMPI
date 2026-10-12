@@ -186,23 +186,37 @@ int main(int argc, char** argv)
     /* n.b. the engine runs at 44.1 kHz while these files are 48 kHz, so every
      * tone lands at 0.919x its nominal frequency (see sample_map_probe), and
      * JAMMI additionally transposes by the key (C3 -> 0.5). */
-    printf("--- CUBBI: every key plays its own slot ----------------------------\n");
+    /* PORT PATCH P22: CUBBI's pads are a piano and one slot is one OCTAVE, so
+     * the slot a press plays comes from the octave of the pad, not from the pad
+     * itself: pad 68 (the bottom-left C) is the slot the `slot` knob selects and
+     * pad 84 (the C an octave up) is the NEXT slot. The key's distance from its
+     * octave's C is the pitch, hence the x1.4983 factors (a G, +7 semitones).
+     * The external-note presses this used to do (MIDI 48/50/52) are not the
+     * device's pads at all - they fall back to a chromatic reading, which is a
+     * different (and separately probed) path. */
+    printf("--- CUBBI: one slot per octave of the pads -------------------------\n");
     set("voice_mode", "cubbi");
     settle_ms(800);
-    press_note("cubbi bank a, key C3  (slot 1: 440)", 48, 404.25);
-    press_note("cubbi bank a, key D3  (slot 2: 480)", 50, 441.00);
-    press_note("cubbi again after the jammi round-trip, key E3 (520)", 52, 477.75);
-    press_note("cubbi bank a, key F3  (slot 4: 560)", 53, 514.50);
-    press_note("cubbi bank a, key G3  (slot 5: 600)", 55, 551.25);
+    set("slot", "1");
+    settle_ms(600);
+    press_note("cubbi slot 1, bottom-left pad C3 (slot 1: 440)", 68, 404.25);
+    press_note("cubbi slot 1, pad G3 (+7 st)", 72, 404.25 * 1.4983);
+    press_note("cubbi slot 2, pad C4 (480)", 84, 441.00);
+    press_note("cubbi slot 2, pad G4 (+7 st)", 88, 441.00 * 1.4983);
+    set("slot", "3");
+    settle_ms(600);
+    press_note("cubbi slot 3, pad C3 (520)", 68, 477.75);
+    press_note("cubbi slot 4, pad C4 (560)", 84, 514.50);
 
-    printf("\n--- bank changes which set the keys play ---------------------------\n");
+    printf("\n--- bank changes which set the pads play ---------------------------\n");
     set("bank", "1");
+    set("slot", "1");
     settle_ms(800);
-    press_note("cubbi bank b, key C3  (bank b slot 1: 640)", 48, 588.00);
-    press_note("cubbi bank b, key D3  (bank b slot 2: 680)", 50, 624.75);
+    press_note("cubbi bank b, pad C3 (bank b slot 1: 640)", 68, 588.00);
+    press_note("cubbi bank b, pad C4 (bank b slot 2: 680)", 84, 624.75);
     set("bank", "0");
     settle_ms(800);
-    press_note("cubbi bank a again, key C3 (440)", 48, 404.25);
+    press_note("cubbi bank a again, pad C3 (440)", 68, 404.25);
 
     printf("\n--- JAMMI: one sample, played chromatically -----------------------\n");
     set("voice_mode", "jammi");
@@ -248,7 +262,9 @@ int main(int argc, char** argv)
     settle_ms(800);
     set("bank", "0");
     settle_ms(800);
-    press_note("cubbi bank a, key E3  (slot 3: 520)", 52, 477.75);
+    set("slot", "3");
+    settle_ms(600);
+    press_note("cubbi bank a, pad C3  (slot 3: 520)", 68, 477.75);
     printf("\n%s (%d failure%s in %d checks)\n", failures ? "VERDICT: FAIL" : "VERDICT: PASS",
            failures, failures == 1 ? "" : "s", checks);
     return failures ? 1 : 0;

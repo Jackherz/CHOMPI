@@ -227,39 +227,41 @@ int main(int argc, char** argv)
 
     printf("fds after the knob sweep: %d\n", fd_count());
 
-    /* The keys, which is what the user actually plays. 48 -> slot 1 and
-     * 50 -> slot 2 are the two slots this directory has files for; the rest of
-     * CHOMPI's 15 keys map to slots whose files are absent here (they would be
-     * present on a full card), so they are silent for a reason that has
-     * nothing to do with any of this. */
-    press_note("7. key 48 (slot 1)", 48, 0.4);
-    press_note("7. key 50 (slot 2)", 50, 0.4);
+    /* The pads, which is what the user actually plays. PORT PATCH P22: one slot
+     * is one OCTAVE of the pads, so with `slot` at 1 the bottom-left C is slot
+     * 1's octave root and the C an octave above it is slot 2's; the two are the
+     * only slots this directory has files for (on a full card the rest are
+     * present, and the pads for them are silent here for a reason that has
+     * nothing to do with any of this). */
+    set_slot(1);
+    press_note("7. pad 68 (slot 1, bottom-left C)", 68, 0.4);
+    press_note("7. pad 84 (slot 2, the C above)", 84, 0.4);
     dump_voices("after two keys");
 
     /* Every key press calls SetVoiceSlot(), exactly like the knob used to --
      * so fast playing across slots opens files in the same burst. If that
      * wedges the voice, it is not a knob bug: playing does it. */
-    for(int n = 48; n <= 72; n++)
+    for(int n = 68; n <= 99; n++)
     {
         press_note(NULL, n, 0.06);
         usleep(20 * 1000);
     }
     settle(1200);
-    const double after_keys = press_note("8. key 48 after a key sweep", 48, 0.4);
+    const double after_keys = press_note("8. pad 68 after a key sweep", 68, 0.4);
     if(after_keys <= base * 0.4) { printf("   sound did NOT come back\n"); fails++; }
 
     printf("fds after the key sweep: %d\n", fd_count());
 
     for(int i = 0; i < 30; i++)
     {
-        press_note(NULL, (i & 1) ? 50 : 48, 0.05);
+        press_note(NULL, (i & 1) ? 84 : 68, 0.05);
         usleep(15 * 1000);
     }
     printf("fds after fast playing: %d\n", fd_count());
     dump_voices("after the key sweep");
 
     settle(1200);
-    const double after_fast = press_note("9. key 48 after fast playing", 48, 0.4);
+    const double after_fast = press_note("9. pad 68 after fast playing", 68, 0.4);
     if(after_fast <= base * 0.4) { printf("   sound did NOT come back\n"); fails++; }
 
     /* A file that has since been deleted is the case that used to be fatal:
@@ -272,8 +274,10 @@ int main(int argc, char** argv)
     wait_ms(300);
     api->set_param(inst, "sample_file", "/tmp/chompi_vanished.wav");
     wait_ms(1200);
-    press_note("10. key 50 (assigned file gone)", 50, 0.4);
-    const double after_vanished = press_note("10. key 48 still plays", 48, 0.4);
+    set_slot(1); /* back to the octave pair: lower = slot 1, upper = slot 2 */
+    wait_ms(300);
+    press_note("10. pad 84 (slot 2's file is gone)", 84, 0.4);
+    const double after_vanished = press_note("10. pad 68 (slot 1) still plays", 68, 0.4);
     if(after_vanished <= base * 0.4) { printf("   a missing file silenced the module\n"); fails++; }
     printf("fds after the vanished file: %d\n", fd_count());
     dump_voices("after the vanished file");

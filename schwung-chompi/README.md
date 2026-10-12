@@ -118,7 +118,7 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | FX before or after the looper | `fx_pre_loop` — the Setup page's `FX Route`: `pre` / `post` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |
 | SD-card slot files | `samples/cubbi_aN.wav` / `jammi_aN.wav` on the Move's FS |
-| load a sample onto a key | the **Samples** level: pick `slot`, then `sample_file` opens the host's browser at the portal (`Built-in` = the card, `User Library` = yours) |
+| load a sample onto a key | the **Samples** level: pick `slot`, then `sample_file` opens the host's browser at the portal (`Built-in` = the card, `User Library` = yours) — one slot is one octave of the keybed, so the sample you pick plays across 12 keys |
 | (no CHOMPI equivalent) | `start` / `end` are `wav_position`s: the host draws the assigned file's waveform on the pads |
 
 The shadow UI gets its page layout from `get_param("ui_hierarchy")` (levels
@@ -142,7 +142,29 @@ file it holds; this is the reading to ask for when a voice goes quiet),
 plus `vu_in` / `vu_out` (envelope followers). All are in-memory reads — safe
 to poll.
 
-### Assigning a sample to a key
+### Assigning a sample to a slot (one octave of the keybed)
+
+The pads are a two-octave piano, and **one slot is one octave** of it:
+
+```
+row 1   C  D  E  F  G  A  B  C      the slot you selected
+row 2   .  C# D# .  F# G# A# .      (the black keys for those)
+row 3   C  D  E  F  G  A  B  C      the NEXT slot up
+row 4   .  C# D# .  F# G# A# .      (the black keys for those)
+```
+
+Bottom-left is MIDI 68 on the Move's 4×8 grid, rows of eight left to right. The
+six pads marked `.` are where a piano has no key; they do nothing. Because the row
+pair is an octave and a slot is an octave, the `slot` knob pages the surface up
+through the slots: `slot` 5 shows slots 5 and 6, `slot` 6 shows 6 and 7, and so
+on. Within an octave the key is the pitch — the octave's C plays the sample at
+its own speed, the keys above it play it faster, up to the B at 1.89× — so the
+one file you assign is playable over that whole octave.
+
+This is the model the Munchi Tape reference lays out on its pads, and it is why
+the Samples page's knob is called **Slot (1 octave)** and the page itself
+**Samples (1 slot = 1 octave)**. The device's Help viewer gets the same words
+(`module/help.json`, "A slot is an octave").
 
 `slot` selects which slot 1–14 the Samples page is editing (slot 15 is the
 recorder's buffer, and an assignment to it is refused with a message rather
@@ -168,10 +190,12 @@ that never ran a deploy script still gets it. The layout and the symlinks are
 mestela's `schwung-breakbeat`, which solved the same problem the same way —
 see PORT PATCH P18.
 
-The browser offers **`.wav` only**, and that is deliberate: the engine reads
-RIFF/WAVE PCM and skips a fixed 44-byte header, so an AIFF (or anything else)
-would be played as raw bytes — noise. Breakbeat filters the same way, for the
-same reason.
+The browser offers **`.wav`, `.aif` and `.aiff`**. The engine itself reads
+RIFF/WAVE PCM and skips a fixed 44-byte header, so anything else would be played
+as raw bytes — noise; a file-byte-addressed converter in front of it
+(`port/sample_view.cpp`, PORT PATCH P21) turns WAV at any rate/bit depth and
+AIFF/AIFC into the 16-bit stereo the engine expects, and the 16-bit stereo
+44-byte-header case still takes the original fast path untouched.
 
 The module's own runtime files (`looper.wav`, `temp_rec.wav`) live in that same
 folder and therefore show up under `Built-in` next to the card set; they are
@@ -200,12 +224,14 @@ the knobs).
 
 Two things worth knowing:
 
-* **`pad_layout` is served as `"chromatic"`**, re-derived from the engine's
-  voice mode on every read. MODULES.md is explicit that an absent
+* **`pad_layout` is served as `"chromatic"`**: both voice modes put a keyboard
+  on the pads now (CUBBI one slot per octave, JAMMI one sample across them), so
+  the surface is declared as the keyboard it is. MODULES.md is explicit that an absent
   `pad_layout` is not the same as `"chromatic"`, and a sound generator's
   `module.json` hierarchy is never read — the plugin has to serve it.
-* **No MIDI notes are declared.** Notes arrive where they arrive; the key map
-  (`note_to_button`) is CHOMPI's own.
+* **No MIDI notes are declared.** Notes arrive where they arrive; the key map is
+  CHOMPI's own keybed, laid out on the pads (`kMoveKey` in `chompi_move.cpp`),
+  with a chromatic fallback for notes that are not one of the 32 pads.
 
 ### Mode, bank and slot
 
@@ -213,16 +239,27 @@ The **Setup** page carries the three knobs the hardware has:
 
 | knob | what it does |
 | --- | --- |
-| `voice_mode` | **JAMMI** — one sample for the whole keyboard, played at the note's speed: the original tape behaviour. **CUBBI** — each key plays the sample of its own slot. |
+| `voice_mode` | **JAMMI** — one sample for the whole keybed, played at the key's speed: the original tape behaviour. **CUBBI** — one slot per OCTAVE of the keybed, so two samples are on the pads at once. |
 | `bank` | which set of samples that mode plays: 0–4, i.e. a–e on the card. The card set fills a, b and c. |
-| `slot` | which slot 1–14 is selected (15 is the recording buffer). In CUBBI it is what the Samples page edits — the keys still address their own slots. In JAMMI it is the sample the keys play. |
+| `slot` | which slot 1–14 is selected (15 is the recording buffer). In CUBBI it is the slot on the LOWER octave of the keybed, and the octave above it is the next slot; the Samples page assigns to it. In JAMMI it is the sample the whole keybed plays. |
+| `octave` | transposes the whole keybed, one octave per step, in both modes. |
 
 **Selecting a slot never cuts off what is playing.** The new sample is bound on
 the next key press: one file open per change, instead of a burst of opens while
 a knob is being swept, which is what used to wedge a reader and leave the module
 silent until it was reloaded (VENDORED P14/P17). In JAMMI, move `slot` or `bank`
-and press any key to hear the sample you picked; in CUBBI, `slot` only changes
-what the Samples page is editing, because there the key chooses the slot.
+and press any key to hear the sample you picked; in CUBBI, move `slot` and the
+lower octave of the pads plays the sample you picked, the upper one the slot
+above it.
+
+**Pitch comes from the key, not from a companion file.** Above 1.5× the engine
+wants a `<name>_double.wav` next to the sample — the card ships one for every
+file, the same audio at twice the speed (half the frames, an octave up) so the
+sample's own high notes can be read from a copy that is not thinned out; a user's assignment has none, and the reader used to claim double speed
+anyway and play it an OCTAVE LOW (measured 321 Hz where 642 was due). PORT PATCH
+P22 clears that claim for assigned slots, so the top of a slot's octave plays at
+the right pitch with the one copy it has (at the cost of the aliasing the double
+exists to avoid).
 
 Slot 15 is CHOMPI's built-in RAM buffer — out of the box that is a decaying test
 tone, which is what a fresh module used to play regardless of the knobs. To hear
@@ -291,7 +328,10 @@ make host && make tools
 #   mode_bank_probe   which sample each mode/bank/slot plays, measured as a
 #                     frequency because every probe sample is a tone
 #   looper_probe      record, play and clear a loop; and where the FX sit
-for p in sample_map_probe slot_knob_probe unload_probe mode_bank_probe looper_probe; do
+#   keybed_octave_probe  one slot = one octave of the pads: every piano key's
+#                     slot and pitch, the octave knob, and the >1.5x case
+for p in sample_map_probe slot_knob_probe unload_probe mode_bank_probe looper_probe \
+         keybed_octave_probe; do
     g++ -std=c++17 -O1 -D_Static_assert=static_assert \
         -I module/dsp/third_party/schwung -o /tmp/$p tools/$p.cpp -ldl
 done
@@ -301,6 +341,8 @@ python3 tools/make_probe_samples.py /tmp/fullmod/samples  # tone-labelled set
 /tmp/unload_probe     build/chompi_move.so .
 /tmp/mode_bank_probe  build/chompi_move.so /tmp/fullmod
 /tmp/looper_probe     build/chompi_move.so /tmp/fullmod
+mkdir -p /tmp/kboct/samples && cp build/chompi_move.so /tmp/kboct/
+(cd /tmp/kboct && /tmp/keybed_octave_probe ./chompi_move.so .)
 ```
 
 `render_test` dlopens the plugin, feeds it the same `host_api_v1_t` the chain
@@ -321,12 +363,13 @@ and `make render` is the smoke test.
 | Device, loaded in a chain via the Shadow UI | ✅ **confirmed on an Ableton Move**, 2026-10-11 |
 | Keys over a running loop, looper record/playback | ✅ confirmed — briefly filed as a defect, then falsified (the keys do sound over the loop) |
 | Fast playing under load, audio in | not yet tested |
-| Sample import (browser, assignment, waveform trim) | offline-verified (`tools/sample_map_probe`), not yet on device |
+| Sample import (browser, assignment, waveform trim) | offline-verified (`tools/sample_map_probe`, `tools/sample_format_probe`), not yet on device |
 | Mode / bank / slot, loop clear, FX routing | offline-verified (`tools/mode_bank_probe`, `tools/looper_probe`), not yet on device |
+| One slot = one octave on the pads | offline-verified (`tools/keybed_octave_probe`), not yet on device |
 
 The device check that passed: the aarch64 build dlopens on the Move, serves
-`chain_params` (2127 B / 31 entries when that check ran — 2796 B / 35 entries
-today), `ui_hierarchy` (1352 B then, 6 levels — 1864 B today, plus
+`chain_params` (2127 B / 31 entries when that check ran — 2826 B / 35 entries
+today), `ui_hierarchy` (1352 B then, 6 levels — 1934 B today, plus
 `pad_layout`), `state` (16 keys then, 17 today), finds the slot files on the
 Move's filesystem (`cubbi/0:110000000000001-`) and streams a CUBBI sample off
 disk into the render block — `peak=4729` over 2 s, i.e. the sample played, and

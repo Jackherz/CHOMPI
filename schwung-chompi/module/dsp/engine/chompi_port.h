@@ -119,6 +119,17 @@ void SetSlotOverride(int mode, int bank, int slot, const char* abs_path);
 void ClearSlotOverride(int mode, int bank, int slot);
 bool SlotHasOverride(int mode, int bank, int slot);
 
+/** Does this slot's sample have a prepared 2x-speed companion to swap to?
+ *
+ *  PORT PATCH P22. The card's convention names come in pairs: `<name>.wav`
+ *  plus `<name>_double.wav`, the same audio twice as long, which the reader
+ *  opens once varispeed * global pitch passes 1.5x instead of skipping samples
+ *  in the ordinary copy. A file the USER assigned to a slot has no such
+ *  companion -- `SlotSamplePath()` resolves both names to the one file, so a
+ *  reader that claimed double speed would play that file an octave low. Hence:
+ *  convention name = yes, assignment = no. */
+bool SlotHasDoubleSpeedCopy(int mode, int bank, int slot);
+
 /** True when `path` lives inside the sample directory — i.e. it is a file this
  *  module owns and may unlink. A user-assigned sample from the device's library
  *  is NOT ours: CHOMPI's erase path would otherwise delete it. (PORT PATCH P10) */

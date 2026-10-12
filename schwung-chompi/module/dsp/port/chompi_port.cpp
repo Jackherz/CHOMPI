@@ -321,6 +321,13 @@ bool SlotHasOverride(int mode, int bank, int slot)
     return g_map[mode][bank][slot - 1][0] != '\0';
 }
 
+/* PORT PATCH P22 -- see chompi_port.h. `Valid()` also keeps this honest for the
+ * out-of-range slot a clamped keybed can still ask about. */
+bool SlotHasDoubleSpeedCopy(int mode, int bank, int slot)
+{
+    return !SlotHasOverride(mode, bank, slot);
+}
+
 void SlotSamplePath(int mode, int bank, int slot, bool dbl, char* dst, size_t dst_len)
 {
     if(dst == nullptr || dst_len == 0)

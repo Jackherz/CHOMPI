@@ -99,7 +99,10 @@ $(AARCH64_OUT): $(PORT_SRC) $(wildcard $(DSP_DIR)/engine/*.h) $(wildcard $(DSP_D
 # without a Move: param serving, state round-trip, key handling. `tools`
 # builds them for HOST, `tools-aarch64` for the device (then scp them over).
 TOOL_SRC  := tools/serve_params.cpp tools/state_roundtrip.cpp tools/key_probe.cpp \
-             tools/param_readback_probe.cpp tools/sample_format_probe.cpp
+             tools/param_readback_probe.cpp tools/sample_format_probe.cpp \
+             tools/keybed_octave_probe.cpp tools/sample_map_probe.cpp \
+             tools/slot_knob_probe.cpp tools/mode_bank_probe.cpp \
+             tools/looper_probe.cpp tools/env_probe.cpp tools/unload_probe.cpp
 TOOLS     := $(patsubst tools/%.cpp,$(BUILD)/%,$(TOOL_SRC))
 TOOLS_A64 := $(patsubst tools/%.cpp,$(BUILD)/aarch64/%,$(TOOL_SRC))
 
@@ -125,6 +128,7 @@ module: $(AARCH64_OUT) module/module.json
 	@mkdir -p $(MODULE_STAGE)/samples
 	cp $(AARCH64_OUT) $(MODULE_STAGE)/dsp.so
 	cp module/module.json $(MODULE_STAGE)/module.json
+	cp module/help.json $(MODULE_STAGE)/help.json
 	cp samples/*.wav $(MODULE_STAGE)/samples/ 2>/dev/null || true
 	@echo "staged $(MODULE_STAGE):"
 	@ls -la $(MODULE_STAGE) $(MODULE_STAGE)/samples
@@ -166,7 +170,7 @@ endef
 
 deploy: module
 	$(SSH) $(REMOTE) "mkdir -p $(REMOTE_DIR)/samples"
-	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):$(REMOTE_DIR)/
+	$(SCP) build/module/dsp.so build/module/module.json build/module/help.json $(REMOTE):$(REMOTE_DIR)/
 	$(SCP) build/module/samples/*.wav $(REMOTE):$(REMOTE_DIR)/samples/
 	$(make_portal)
 	@echo "deployed to $(MOVE_USER)@$(MOVE):$(REMOTE_DIR)"
@@ -184,7 +188,7 @@ deploy: module
 # stays small.
 deploy-full: module
 	$(SSH) $(REMOTE) "mkdir -p $(REMOTE_DIR)/samples"
-	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):$(REMOTE_DIR)/
+	$(SCP) build/module/dsp.so build/module/module.json build/module/help.json $(REMOTE):$(REMOTE_DIR)/
 	$(SCP) build/module/samples/*.wav $(REMOTE):$(REMOTE_DIR)/samples/
 	@echo "pushing the full card set from $(SAMPLES_SRC) (~161 MB, one time) ..."
 	$(SCP) $(SAMPLES_SRC)/cubbi_*.wav $(SAMPLES_SRC)/jammi_*.wav $(REMOTE):$(REMOTE_DIR)/samples/
@@ -199,7 +203,7 @@ deploy-full: module
 probe: tools-aarch64 module
 	$(SSH) $(REMOTE) "mkdir -p /data/UserData/schwung/chompi-probe/samples"
 	$(SCP) $(TOOLS_A64) $(REMOTE):/data/UserData/schwung/chompi-probe/
-	$(SCP) build/module/dsp.so build/module/module.json $(REMOTE):/data/UserData/schwung/chompi-probe/
+	$(SCP) build/module/dsp.so build/module/module.json build/module/help.json $(REMOTE):/data/UserData/schwung/chompi-probe/
 	$(SCP) build/module/samples/*.wav $(REMOTE):/data/UserData/schwung/chompi-probe/samples/
 	@echo "probes staged in /data/UserData/schwung/chompi-probe on $(MOVE); run e.g."
 	@echo "  ssh $(MOVE_USER)@$(MOVE) 'cd /data/UserData/schwung/chompi-probe && ./serve_params ./dsp.so chain_params ui_hierarchy && ./key_probe ./dsp.so . 2'"

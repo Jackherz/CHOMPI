@@ -57,25 +57,46 @@
 #define CHOMPI_MAP_SETTLE_MS 500
 #define CHOMPI_PATH_LEN 512
 
-/** CHOMPI's keyboard->MIDI map, copied verbatim from NormalPage.h (key_map[]).
- *  Index = CHOMPI's SwId button id (what KeyToSlot() and the engine's
- *  `key` argument expect), value = the MIDI note that key sends.
- *  Only the 25 keyboard entries are listed; entries 0..6 and 32..39 are
- *  encoder switches, not keys. */
-static const struct
-{
-    uint8_t button;
-    uint8_t note;
-} kChompiKeys[] = {
-    {15, 0x30}, /* KEY_1  C3  */ {7, 0x31}, {8, 0x32}, {12, 0x33}, {9, 0x34},
-    {10, 0x35}, {13, 0x36}, {11, 0x37}, {14, 0x38}, {16, 0x39}, {21, 0x3a},
-    {17, 0x3b}, {18, 0x3c}, {22, 0x3d}, {19, 0x3e}, {23, 0x3f}, {20, 0x40},
-    {24, 0x41}, {29, 0x42}, {25, 0x43}, {30, 0x44}, {26, 0x45}, {31, 0x46},
-    {27, 0x47}, {28, 0x48}, /* KEY_15 C5 */
+/* ---- the keybed on the 32 pads -------------------------------------------
+ *
+ * PORT PATCH P22.
+ *
+ * Move's 32 pads are MIDI 68..99, four rows of eight, the bottom row first.
+ * We lay CHOMPI's own keybed out on them: the lower row of each pair of rows
+ * is the WHITE keys (C D E F G A B C) and the row above it holds the black
+ * keys that sit between them (C# D# F# G# A#). Six pads fall where a piano has
+ * no key at all -- three in each octave -- and they do nothing, the same six a
+ * real keyboard leaves out. (Two octaves, so the top C of the lower pair is the
+ * bottom C of the upper pair, exactly like CHOMPI's own 15 white keys.)
+ *
+ * That layout is half the story. The other half is what a SLOT is here:
+ *
+ *   ONE SLOT IS ONE OCTAVE.
+ *
+ * On the hardware one pad is one slot -- 25 keys for 15 slots, so a sample
+ * lives on a single key and the rest of the keybed plays its neighbours. Here
+ * the slot you select with the `slot` knob owns the pair of rows that make up
+ * one octave, and the pair above it is the NEXT slot: the surface shows two
+ * slots at a time and the knob pages through them (slots 5 and 6, then 6 and 7,
+ * ...). Within a slot's octave the key decides the PITCH: the octave's C plays
+ * the sample at its own speed, the keys above it play it faster, up to the B
+ * at 1.89x. So a sample covers an octave rather than a key -- load your own
+ * WAV into a slot and you can play that whole octave with it.
+ *
+ * The `octave` knob transposes the whole keybed, an octave per step, in both
+ * voices. Notes that are not one of the 32 pads -- a MIDI keyboard, or a host
+ * transposition that moved the pads -- are read chromatically so they play too.
+ */
+static const signed char kMoveKey[32] = {
+     0,  2,  4,  5,  7,  9, 11, 12, /* row 1: white keys, lower octave */
+    -1,  1,  3, -1,  6,  8, 10, -1, /* row 2: its black keys */
+    12, 14, 16, 17, 19, 21, 23, 24, /* row 3: white keys, upper octave */
+    -1, 13, 15, -1, 18, 20, 22, -1, /* row 4: its black keys */
 };
-static const int kNumChompiKeys = sizeof(kChompiKeys) / sizeof(kChompiKeys[0]);
-static const int kChompiLowNote  = 0x30; /* C3 */
-static const int kChompiHighNote = 0x48; /* C5 */
+static const int kMovePadLow  = 68;  /* bottom-left pad (MovePads[0]) */
+static const int kMovePadHigh = 99;  /* top-right pad */
+/* Steps in the keybed that begin a new slot, and the semitones in a slot. */
+static const int kKeybedSlotSpan = 12;
 
 /* chompi::g_sample_dir (the runtime sample directory) is defined in
  * port/chompi_port.cpp so the engine links without the plugin too. */
@@ -200,21 +221,45 @@ static void set_err(ChompiInstance* inst, const char* msg)
     snprintf(inst->lasterr, sizeof(inst->lasterr), "%s", msg);
 }
 
-/** MIDI note -> CHOMPI button id, with two-octave folding so Move's pads can
- *  reach the whole CHOMPI range from any octave. Returns -1 for "no key". */
-static int note_to_button(int note, int octave_shift)
+/** Where a note falls in the two-octave keybed: 0..24, or -1 for a pad that
+ *  has no key under it (see kMoveKey). A note that is not one of the pads is
+ *  read chromatically, so a MIDI keyboard plays the same shape. */
+static int keybed_key(int note)
 {
-    int n = note + 12 * octave_shift;
-    while(n < kChompiLowNote)
-        n += 12;
-    while(n > kChompiHighNote)
-        n -= 12;
-    for(int i = 0; i < kNumChompiKeys; i++)
-    {
-        if(kChompiKeys[i].note == n)
-            return kChompiKeys[i].button;
-    }
-    return -1;
+    if(note >= kMovePadLow && note <= kMovePadHigh)
+        return kMoveKey[note - kMovePadLow];
+
+    int rel = note - 60;
+    int oct = (rel >= 0) ? (rel / 12) : ((rel - 11) / 12); /* floor, not trunc */
+    if(oct < 0)
+        oct = 0;
+    if(oct > 1)
+        oct = 1;
+    int pc = ((rel % 12) + 12) % 12;
+    return oct * 12 + pc;
+}
+
+/** The slot a key of the keybed plays. One slot is one octave (see kMoveKey),
+ *  so the key's place in the keybed -- not the key itself -- decides it: the
+ *  lower octave is the selected slot, the upper one the next slot up. Slot 15
+ *  is the recording buffer and is the last stop, so the upper octave sits on it
+ *  rather than running past the end of the table. */
+static int keybed_slot(int key, int selected_slot)
+{
+    int slot = selected_slot + (key >= kKeybedSlotSpan ? 1 : 0);
+    if(slot > 15)
+        slot = 15;
+    if(slot < 1)
+        slot = 1;
+    return slot;
+}
+
+/** How far the key is above the root of its own octave: 0 at the C the slot
+ *  starts on, 12 at the C one octave up. This is what the sample is pitched by,
+ *  and it is why a slot covers an octave. */
+static int keybed_semitones(int key)
+{
+    return key % kKeybedSlotSpan;
 }
 
 // ---------------------------------------------------------------- worker
@@ -801,14 +846,14 @@ static const char* kChainParams
       "{\"key\":\"input_source\",\"name\":\"Input\",\"type\":\"enum\",\"options\":[\"line\",\"mic\"]},"
       "{\"key\":\"voice_mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"jammi\",\"cubbi\"]},"
       "{\"key\":\"bank\",\"name\":\"Bank\",\"type\":\"int\",\"min\":0,\"max\":4},"
-      "{\"key\":\"slot\",\"name\":\"Slot\",\"type\":\"int\",\"min\":1,\"max\":15},"
+      "{\"key\":\"slot\",\"name\":\"Slot (1 octave)\",\"type\":\"int\",\"min\":1,\"max\":15},"
       "{\"key\":\"octave\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-2,\"max\":2},{\"key\":\"loop_clear\",\"name\":\"Clear Loop\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},{\"key\":\"fx_pre_loop\",\"name\":\"FX Route\",\"type\":\"enum\",\"options\":[\"pre\",\"post\"]}]";
 
 static const char* kUiHierarchy
     = "{\"levels\":{\"root\":{\"label\":\"CHOMPI\",\"params\":["
       "{\"key\":\"volume\"},{\"key\":\"filter\"},{\"key\":\"saturate\"},{\"key\":\"warble\"},"
       "{\"key\":\"delay_feedback\"},{\"key\":\"delay_time\"},{\"key\":\"reverb\"},{\"key\":\"varspeed\"},"
-      "{\"level\":\"samples\",\"label\":\"Samples\"},{\"level\":\"tape\",\"label\":\"Tape\"},{\"level\":\"looper\",\"label\":\"Looper\"},"
+      "{\"level\":\"samples\",\"label\":\"Samples (1 slot = 1 octave)\"},{\"level\":\"tape\",\"label\":\"Tape\"},{\"level\":\"looper\",\"label\":\"Looper\"},"
       "{\"level\":\"recorder\",\"label\":\"Recorder\"},{\"level\":\"setup\",\"label\":\"Setup\"}],"
       "\"knobs\":[\"volume\",\"filter\",\"saturate\",\"warble\",\"delay_feedback\",\"delay_time\",\"reverb\",\"varspeed\"]},"
       "\"tape\":{\"label\":\"Tape\",\"params\":[{\"key\":\"reverse\"},{\"key\":\"sustain\"},{\"key\":\"auto_loop\"},"
@@ -821,7 +866,7 @@ static const char* kUiHierarchy
       "{\"key\":\"input_gain\"},{\"key\":\"input_source\"}],"
       "\"knobs\":[\"record\",\"input_monitor\",\"input_gain\",\"input_source\"]},"
       "\"setup\":{\"label\":\"Setup\",\"params\":[{\"key\":\"voice_mode\"},{\"key\":\"bank\"},{\"key\":\"slot\"},"
-      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":1,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
+      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples (1 slot = 1 octave)\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot (1 octave)\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":1,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
 
 // ---------------------------------------------------------------- plugin API
 
@@ -1040,48 +1085,57 @@ static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)
     {
         /* d1 is the note, d2 the velocity — a distinction worth stating out
          * loud, because reading d2 here is exactly the bug this line had. */
-        const int button = note_to_button(d1, inst->octave.load());
-        if(button < 0)
-            return;
+        const int key = keybed_key(d1);
+        if(key < 0)
+            return; /* a pad with no key under it, or an unmappable note */
 
-        int note = d1 + 12 * inst->octave.load();
-        while(note < kChompiLowNote)
-            note += 12;
-        while(note > kChompiHighNote)
-            note -= 12;
+        const bool cubbi = (e.GetVoiceMode() == daisy::VoiceMode::CUBBI);
+        const int  octave = inst->octave.load();
 
-        if(e.GetVoiceMode() == daisy::VoiceMode::CUBBI)
-        {
-            /* CUBBI's keys ARE its pads: each one plays the sample in its own
-             * slot, and KeyToSlot() is the map. A key that is not a pad (the
-             * transport buttons on CHOMPI's panel) has no slot and is silent in
-             * this mode, exactly as on the hardware.
-             *
-             * The slot's own values are loaded by the engine's key path, one
-             * press at a time (PORT PATCH P19).
-             *
-             * PORT PATCH P20: this used to call SetVoiceSlot(slot, false) --
-             * which binds that file to EVERY voice -- on every press. A press
-             * therefore re-pointed voices that were mid-note at a file that had
-             * not finished opening, and a pad whose slot had no file took the
-             * whole keybed silent. That is the reported "pads start playing
-             * different samples" and "sometimes it plays white noise instead of
-             * the sample". One voice, opened once, is what the engine already
-             * does by itself. */
-            if(daisy::KeyToSlot((size_t)button) == daisy::kSlotNone)
-                return;
-        }
+        /* What the key plays.
+         *
+         * CUBBI: the key's OCTAVE picks the slot and its place in that octave
+         * picks the pitch (PORT PATCH P22) -- one slot is one octave, so the
+         * slot travels with the note instead of the engine looking the key up
+         * in KeyToSlot(). The semitone is what the engine's own
+         * MidiNoteToPlaybackRatio() turns into a playback ratio, exactly as
+         * JAMMI does with the note.
+         *
+         * JAMMI: one sample for the whole keybed, so there is no slot to pick
+         * and only the pitch; the C in the middle of the two octaves is the
+         * sample's own speed, as on the hardware.
+         *
+         * The slot's own values are loaded by the engine's key path, one press
+         * at a time (PORT PATCH P19).
+         *
+         * PORT PATCH P20 kept this from calling SetVoiceSlot(slot, false) on
+         * every press: that bound the slot's file to EVERY voice, so a press
+         * re-pointed voices that were mid-note at a file that had not finished
+         * opening, and a pad whose slot had no file took the whole keybed
+         * silent. */
+        const int slot = cubbi ? keybed_slot(key, inst->selected_slot) : 0;
+        const int semitones = cubbi
+            ? keybed_semitones(key)          /* 0..12: the octave's own span */
+            : key - kKeybedSlotSpan;         /* -12..12: C in the middle at 0 */
+        const int pitch = semitones + 12 * octave;
+
         e.request_fifo.PushBack(daisy::KeyRequest(daisy::KeyRequest::Type::START,
-                                                  (float)(note - 60), button,
-                                                  (float)d2 /* velocity */));
+                                                  (float)pitch,
+                                                  /* identity: the note the host
+                                                   * sent, which is unique per
+                                                   * pad and cannot collide with
+                                                   * an octave shift */
+                                                  (int)d1,
+                                                  (float)d2 /* velocity */,
+                                                  slot));
     }
     else if(status == 0x80 || (status == 0x90 && d2 == 0))
     {
-        const int button = note_to_button(d1, inst->octave.load());
-        if(button < 0)
-            return;
+        /* The same identity the press used, and no mapping at all: a key must
+         * stop what it started even if the octave or the voice mode moved in
+         * between. */
         e.request_fifo.PushBack(daisy::KeyRequest(daisy::KeyRequest::Type::STOP, 0.f,
-                                                  button, 127.f));
+                                                  (int)d1, 127.f));
     }
     else if(status == 0xB0)
     {
@@ -1107,12 +1161,16 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     if(strcmp(key, "ui_hierarchy") == 0)
     {
         /* A sound generator's hierarchy must be served here — the chain host
-         * never reads module.json for one. pad_layout is spliced in because it
-         * genuinely differs by mode: CUBBI's keys address sample slots (a pad
-         * surface), JAMMI's are a chromatic keyboard. */
-        const bool cubbi = (inst->engine.GetVoiceMode() == daisy::VoiceMode::CUBBI);
-        const size_t prefix = (size_t)snprintf(buf, (size_t)buf_len, "{\"pad_layout\":\"%s\"",
-                                              cubbi ? "drums" : "chromatic");
+         * never reads module.json for one.
+         *
+         * pad_layout says what the SURFACE is, and said "drums" for CUBBI back
+         * when a pad was a slot (one sample per pad, a drum rack). PORT PATCH
+         * P22 turns CUBBI into a keyboard too — one slot per octave, pitched by
+         * the key — and JAMMI always was one, so both modes answer
+         * "chromatic" now. Nothing may infer a layout from the notes a module
+         * declares, so saying it is the only way to be understood. */
+        const size_t prefix = (size_t)snprintf(buf, (size_t)buf_len,
+                                              "{\"pad_layout\":\"chromatic\"");
         if(prefix + 1 >= (size_t)buf_len)
             return -1;
         /* kUiHierarchy already opens with '{' — drop it when splicing. */
