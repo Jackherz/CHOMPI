@@ -694,7 +694,7 @@ static const char* kChainParams
        * objects in these entries on purpose: the chain host's C-side
        * merge walks braces and keeps only the types it models (a filepath
        * is not a knob). */
-      "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
+      "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\"],\"live_preview\":true},"
       "{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]},"
       "{\"key\":\"record\",\"name\":\"Chompi Rec\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
       "{\"key\":\"input_monitor\",\"name\":\"Monitor\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
@@ -722,7 +722,7 @@ static const char* kUiHierarchy
       "{\"key\":\"input_gain\"},{\"key\":\"input_source\"}],"
       "\"knobs\":[\"record\",\"input_monitor\",\"input_gain\",\"input_source\"]},"
       "\"setup\":{\"label\":\"Setup\",\"params\":[{\"key\":\"voice_mode\"},{\"key\":\"bank\"},{\"key\":\"slot\"},"
-      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":1,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
+      "{\"key\":\"octave\"},{\"key\":\"fx_pre_loop\"}],\"knobs\":[\"voice_mode\",\"bank\",\"slot\",\"octave\"]},\"samples\":{\"label\":\"Samples\",\"params\":[{\"key\":\"slot\",\"name\":\"Slot\",\"short_name\":\"SLOT\",\"type\":\"int\",\"min\":1,\"max\":15},{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\"],\"live_preview\":true},{\"key\":\"sample_clear\",\"name\":\"Clear Slot\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"]}],\"knobs\":[\"slot\"]}}}";
 
 // ---------------------------------------------------------------- plugin API
 

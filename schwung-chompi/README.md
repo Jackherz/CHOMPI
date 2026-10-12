@@ -168,6 +168,15 @@ that never ran a deploy script still gets it. The layout and the symlinks are
 mestela's `schwung-breakbeat`, which solved the same problem the same way —
 see PORT PATCH P18.
 
+The browser offers **`.wav` only**, and that is deliberate: the engine reads
+RIFF/WAVE PCM and skips a fixed 44-byte header, so an AIFF (or anything else)
+would be played as raw bytes — noise. Breakbeat filters the same way, for the
+same reason.
+
+The module's own runtime files (`looper.wav`, `temp_rec.wav`) live in that same
+folder and therefore show up under `Built-in` next to the card set; they are
+the looper's recordings, not part of it.
+
 The paths you see are portal paths ("`Built-in/cubbi_a1.wav`"), while the map
 stores real ones: an assignment that names a shipped sample through the portal
 still compares equal to that slot's convention name and *clears* the override
