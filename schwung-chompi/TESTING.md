@@ -242,6 +242,27 @@ In order, each step isolates one subsystem:
    tape is audibly twice as fast, and `Loop Rev` flips to `On` with the pitch
    cell reading -1.0000. A `Clear Loop` puts all three back where the tape
    lands: pitch 1.0000, reverse `Off`, scrub 0.0000.
+   **The playhead**: with the loop stopped, a turn of `Scrub` lands the tape
+   where the cell says it is — the cell *is* the head's position, 0 at the
+   take's start and 1 at its end, and a second turn from there moves by the
+   turn rather than to it. Started, the same turn is an instant jump to the
+   new place: a tape playhead, not a speed. Park the head and start the tape:
+   it plays from where the head is, comes round, and wraps. It must never sit
+   silent while the screen still says it is playing — a move landing on an odd
+   sample used to put the head one sample short of the take's end forever, and
+   only a move could land there, so scrub near the end of a take and listen
+   for the wrap.
+   **The window**: the Looper page's last two knobs, `Strt` and `End`. `Strt`
+   up starts the loop later in the take, `End` down stops it earlier, and the
+   pass gets shorter by exactly that much — half the take loops about twice as
+   often. Park the head outside the window and start the tape: it plays and
+   the window's content comes round, without anything from outside the window.
+   Both cells keep reading back the number they were set to, `End` below
+   `Strt` included; that crossed pair is the span between the bounds played
+   forwards for now — running it backwards through the span is the next piece
+   of this work, not a fault. `tools/looper_probe` measures the pass in laps
+   (whole 2, half 4) and the park-then-play pair offline; what it cannot do is
+   feel a knob or read the cells off the screen.
 5. **One sample** (Samples page): pick a file. Every pad plays that file,
    pitched by the piano map above. There is no slot, bank or mode knob — a
    second file is not on the keybed until you pick it. On load, every knob
