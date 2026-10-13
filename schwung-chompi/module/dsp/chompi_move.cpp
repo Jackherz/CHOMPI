@@ -621,18 +621,28 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     }
     else if(strcmp(key, "looper_scrub") == 0)
     {
-        /* The host writes the knob's absolute position, and the cell reads that
-         * position back -- so Saved keeps the POSITION, which is also what
-         * stops the knob snapping home on release. The engine wants the TURN:
-         * FileSampler::SetScrub adds to the hardware wheel's accumulator
-         * (turn_count_ += addl) and the audio loop turns that into a rate every
-         * 1/8 s (scrub_target_ = turn_count_ * 0.2). Feeding the absolute
-         * position in re-applied the whole value on every detent -- the tape
-         * crept away instead of following the wheel. */
-        const float delta = f - inst->saved.looper_scrub;
+        /* PORT PATCH P25: a TAPE PLAYHEAD, not the hardware's scrub wheel.
+         *
+         * The user asked for the knob that "moves to a different part of the
+         * loop in real time, like moving a tape playhead", so that is what this
+         * is now: one unit of the knob is one pass of the loop, and the write
+         * is a TURN (the difference from the value we last handed the host),
+         * which the engine applies as a move of the read head. It works while
+         * the loop plays -- the head jumps at once -- and while it is parked,
+         * where the next play starts from wherever the knob left the head.
+         *
+         * The turn is the difference because the host writes ABSOLUTE values:
+         * it reads the cell (which reports the head, see get_param), adds the
+         * turn, and writes the sum. Keeping Saved on the wire value here is
+         * what makes that sum a turn; get_param puts Saved back on the head at
+         * every read, so the base the host adds to is where the head really is.
+         *
+         * The hardware's rate nudge (FileSampler::SetScrub) is untouched in the
+         * engine and unused by this knob. */
+        const float turn = f - inst->saved.looper_scrub;
         inst->saved.looper_scrub = f;
-        if(delta != 0.f)
-            e.SetLooperScrub(delta);
+        if(turn != 0.f)
+            e.MoveLooperHead(turn);
     }
     else if(strcmp(key, "looper_dub_gain") == 0)
     {
@@ -985,7 +995,9 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
     inst->engine.SetFinalComp(inst->saved.final_comp);
     inst->engine.SetInputGain(inst->saved.input_gain);
     inst->engine.SetLooperPitch(inst->saved.looper_pitch);
-    inst->engine.SetLooperScrub(0.f);
+    /* PORT PATCH P25: the loop's playhead starts at the top of the tape; the
+     * scrub knob's value is that position, read back from here on. */
+    inst->saved.looper_scrub = inst->engine.GetLooperPosition();
 
     /* The per-slot values (pitch, start/end, attack/decay, loop, sustain, gain,
      * pan) are read from the store on every selection change and every key
@@ -1282,7 +1294,16 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     if(strcmp(key, "looper_pitch") == 0)
         return snprintf(buf, buf_len, "%.4f", inst->saved.looper_pitch);
     if(strcmp(key, "looper_scrub") == 0)
-        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_scrub);
+    {
+        /* PORT PATCH P25: WHERE THE HEAD IS (0..1 of the loop, 0 when nothing
+         * is recorded). Reading stores it, so the next turn -- which the host
+         * computes as (this value + the turn) -- is measured from the head the
+         * user is actually looking at, and a moving transfer does not fight the
+         * knob. */
+        const float head = inst->engine.GetLooperPosition();
+        inst->saved.looper_scrub = head;
+        return snprintf(buf, buf_len, "%.4f", head);
+    }
     if(strcmp(key, "looper_dub_gain") == 0)
         /* Dub gain is the exception: its knob is the gain the engine is
          * actually applying, and IncrementLooperDubGain's slew is visible in

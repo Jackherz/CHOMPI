@@ -249,7 +249,27 @@ namespace daisy
         float GetPosition() { 
             float tell = static_cast<float>(looper.GetReadTell());
             float size = static_cast<float>(looper.GetReadSize());
+            /* PORT PATCH P25: an empty loop has no position; 0/0 is NaN, and
+             * NaN reaches whatever asked -- the port's Scrub cell reads this,
+             * and so does the hardware's LED maths. Nothing recorded reads as
+             * the start of the tape. */
+            if(size <= 0.f)
+                return 0.f;
             return tell / size;
+        }
+
+        /** PORT PATCH P25: move the loop's playhead by `loops` of the loop.
+         *
+         *  The fraction is what the port's Scrub knob was turned by (one unit
+         *  of the knob is one pass of the loop), and the head wraps, because a
+         *  loop is a circle. `FileSampler::MoveReadHead` is the mover; this
+         *  only converts the port's units into samples. */
+        void MoveHead(float loops)
+        {
+            const float size = static_cast<float>(looper.GetReadSize());
+            if(size < 2.f)
+                return; /* nothing recorded: there is no head to move */
+            looper.MoveReadHead(static_cast<int32_t>(loops * size));
         }
 
         float GetPitch()

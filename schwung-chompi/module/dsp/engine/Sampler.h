@@ -302,6 +302,31 @@ namespace daisy
         inline void SetScrub(float addl) { turn_count_ += addl; }
         inline float GetScrub() { return scrub_; }
 
+        /** PORT PATCH P25: move the READ head, and wrap it at the loop's ends.
+         *
+         *  This is the other thing you can do to a tape: not change its speed
+         *  (SetScrub above, which the hardware wheel drives and which keeps
+         *  running while the tape does), but put the playhead somewhere else.
+         *  The port's Scrub knob asks for this, and reads back where the head
+         *  landed -- a loop is a circle, so a move past either end comes round
+         *  to the other side instead of stopping.
+         *
+         *  A move is a SPLICE: the audio steps to an unrelated part of the
+         *  waveform, and on a loud loop that step is audible as a click. That
+         *  is what a tape's playhead does; tools/looper_probe measures it. */
+        void MoveReadHead(int32_t delta)
+        {
+            const int32_t size = static_cast<int32_t>(ram_buff.GetSize());
+            if(size <= 1)
+                return; /* nothing recorded: there is no head to move */
+
+            int32_t pos = static_cast<int32_t>(ram_buff.GetReadHead()) + delta;
+            pos %= size;
+            if(pos < 0)
+                pos += size;
+            ram_buff.SetReadHead(static_cast<size_t>(pos));
+        }
+
         inline uint32_t GetReadTell() { return ram_buff.GetReadHead(); }
         inline uint32_t GetReadSize() { return ram_buff.GetSize(); }
 

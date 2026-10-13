@@ -1297,6 +1297,12 @@ namespace daisy
         inline float GetLooperPosition() { return looper.GetPosition(); }
         inline float GetLooperPitch() { return looper.GetPitch(); }
 
+        /* PORT PATCH P25: the port's Scrub is a TAPE PLAYHEAD -- it moves the
+         * head to another part of the loop (and its knob reads back where the
+         * head is), rather than the hardware wheel's rate nudge, which stays in
+         * the engine for the wheel. See LooperEngine::MoveHead. */
+        inline void MoveLooperHead(float loops) { looper.MoveHead(loops); }
+
         inline void LooperRecordButton(bool rising) { looper.RecordButton(rising); }
         inline void LooperPlayButton(bool rising) { looper.PlayButton(rising); }
 

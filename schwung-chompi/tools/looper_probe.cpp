@@ -157,6 +157,53 @@ static double peak_hz(double from, double to)
     return best_f;
 }
 
+/* Park the tape: end whatever pass the recorder is in, stop the transport,
+ * and let its speed settle. Recording and playing are one transport here --
+ * ending a take STARTS playback (LooperEngine::ToggleRecord sets play_target)
+ * -- so "stopped" has to be established in that order. */
+static void stop_tape()
+{
+    char b[32];
+    for(int i = 0; i < 3; i++)
+    {
+        get("looper_recording", b, sizeof b);
+        if(b[0] != '1')
+            break;
+        set("looper_record", "lorec"); /* the stateful cell: stop the pass */
+        render(0.1, -1, -1, 0, 0);
+    }
+    get("looper_playing", b, sizeof b);
+    if(b[0] == '1')
+    {
+        set("looper_play", "Trig"); /* a momentary: the write toggles */
+        render(0.2, -1, -1, 0, 0);
+    }
+    render(0.6, -1, -1, 0, 0); /* the transport's speed slews to rest */
+}
+
+/* Start the transport, if it is not already rolling. */
+static void start_tape()
+{
+    char b[32];
+    get("looper_playing", b, sizeof b);
+    if(b[0] != '1')
+        set("looper_play", "Trig");
+    render(0.25, -1, -1, 0, 0);
+}
+
+/* Ask the Scrub knob for a position: READ the cell first (it reports where the
+ * head is, and that is the base the host turns from), then write the position
+ * wanted. The knob is relative, so the write is the difference between the two
+ * -- which is exactly what the host does when a hand turns it. */
+static void scrub_to(double frac)
+{
+    char b[32];
+    get("looper_scrub", b, sizeof b);
+    char v[32];
+    snprintf(v, sizeof v, "%.4f", frac);
+    set("looper_scrub", v);
+}
+
 /* Records one loop: arm, play the burst, stop. Returns the loop's length in
  * seconds (the recording length), or 0 if the engine never started recording. */
 static double record_loop(double seconds, double in_from, double in_to)
@@ -395,44 +442,77 @@ int main(int argc, char** argv)
     check("the record cell is back to lorec once the pass stops",
           strcmp(buf, "lorec") == 0, buf);
 
-    /* Scrub moves the tape only while the transport is STOPPED, which is the
-     * hardware's own arrangement: on the CHOMPI that encoder is the pitch
-     * control while the looper plays and the scrub wheel when it does not
-     * (NormalPage: IsLooperPlaying() picks between them). */
-    get("looper_playing", buf, sizeof buf);
-    if(buf[0] == '1')
-    {
-        set("looper_play", "Trig"); /* a momentary: the write toggles */
-        render(0.3, -1, -1, 0, 0);
-    }
-    get("looper_playing", buf, sizeof buf);
-    check("the transport is stopped for the scrub checks", buf[0] == '0', buf);
-
-    set("looper_scrub", "0");
-    render(0.3, -1, -1, 0, 0);
-    const double parked  = tape_position();
-    set("looper_scrub", "2"); /* a turn of +2 */
-    render(0.5, -1, -1, 0, 0);
-    const double moved   = tape_position();
-    render(0.3, -1, -1, 0, 0); /* the turn's 1/8 s window expires */
-    const double settled = tape_position();
-    set("looper_scrub", "2"); /* the SAME position: no turn, no further move */
-    render(0.5, -1, -1, 0, 0);
-    const double echoed  = tape_position();
-
-    /* The turn's own move is the yardstick for the echo: the tape keeps
-     * creeping for a moment after a turn (scrub_ slews toward the rate at
-     * 0.0001 a sample), so "did not move at all" would fail on the tail of the
-     * previous turn. What matters is the size -- a write that really sent
-     * +2.0 again moves the head as far as the first one did. */
-    const double turn_move = fabs(moved - parked);
-    const double echo_move = fabs(echoed - settled);
-    snprintf(buf, sizeof buf, "parked=%.4f moved=%.4f settled=%.4f echoed=%.4f",
-             parked, moved, settled, echoed);
-    check("a scrub turn moves the tape", turn_move > 0.005, buf);
-    check("the same position again is not a new turn", echo_move < 0.2 * turn_move, buf);
+    printf("\n--- Scrub: the tape playhead -----------------------------------\n");
+    /* An empty loop has nothing to move. The knob must not crash, must not
+     * invent a position, and the cell must read the top of the tape. */
+    set("loop_clear", "Clear");
+    render(1.6, -1, -1, 0, 0); /* the clear winds down */
+    set("looper_scrub", "1.5"); /* a turn with nothing recorded */
+    render(0.1, -1, -1, 0, 0);
     get("looper_scrub", buf, sizeof buf);
-    check("scrub reads back the position it was given", strcmp(buf, "2.0000") == 0, buf);
+    check("an empty loop has no playhead to move", fabs(atof(buf)) < 0.001, buf);
+
+    /* A take whose tone is in its first fifth, so where the head is can be
+     * HEARD as well as read: 1.6 s of tape, tone over 0.0-0.2 s. */
+    record_loop(1.6, 0.0, 0.2);
+
+    /* Park it. What the knob is given is a POSITION: read the cell (the head),
+     * write where you want it. */
+    stop_tape();
+
+    const double before = tape_position();
+    scrub_to(0.25);
+    render(0.15, -1, -1, 0, 0);
+    const double after = tape_position();
+    get("looper_scrub", buf, sizeof buf);
+    snprintf(buf, sizeof buf, "head %.4f -> %.4f, cell %s", before, after, buf);
+    check("a parked turn puts the head where it was sent, and the cell reads it",
+          fabs(after - 0.25) < 0.03 && fabs(atof(buf) - after) < 0.01, buf);
+
+    /* The same value again is not a turn: the host re-writes what it shows. */
+    char same[32];
+    snprintf(same, sizeof same, "%.4f", after);
+    set("looper_scrub", same);
+    render(0.15, -1, -1, 0, 0);
+    const double echoed = tape_position();
+    snprintf(buf, sizeof buf, "%.4f -> %.4f", after, echoed);
+    check("writing the same position again does not move it",
+          fabs(echoed - after) < 0.02, buf);
+
+    /* While the loop PLAYS the head jumps at once -- a playhead move, not a
+     * rate change, which would take a long time to cross half the loop. */
+    start_tape();
+    get("looper_playing", buf, sizeof buf);
+    const bool rolling = buf[0] == '1';
+    const double playing_before = tape_position();
+    scrub_to(0.75);
+    const double playing_after = tape_position(); /* no render: immediate */
+    snprintf(buf, sizeof buf, "%.4f -> %.4f (turn +%.2f, played)",
+             playing_before, playing_after, 0.75 - playing_before);
+    check("a turn while the loop plays is an instant move, not a speed change",
+          rolling && fabs(playing_after - 0.75) < 0.03, buf);
+
+    /* Parked, the tape plays FROM the head: the tone is at the top of the
+     * loop, so parking just before the seam must play it almost at once, and
+     * parking past it must wait for the loop to come round. */
+    stop_tape();
+    scrub_to(0.90);
+    render(0.1, -1, -1, 0, 0);
+    start_tape(); /* play from there */
+    const double near_seam = render(0.5, -1, -1, 0.05, 0.45);
+    snprintf(buf, sizeof buf, "rms=%.4f", near_seam);
+    check("parked before the tone, playback plays it straight away",
+          near_seam > 0.01, buf);
+
+    stop_tape();
+    scrub_to(0.30);
+    render(0.1, -1, -1, 0, 0);
+    start_tape();
+    const double past_tone = render(0.5, -1, -1, 0.05, 0.45);
+    snprintf(buf, sizeof buf, "rms=%.4f", past_tone);
+    check("parked past the tone, it waits for the loop to come round",
+          past_tone < 0.004, buf);
+    stop_tape(); /* leave the tape parked for whatever runs next */
 
     printf("\n--- Loop Pitch and Loop Rev: the knob and the tape --------------\n");
     /* Two things are being checked at once, and they are different failures:
@@ -448,6 +528,13 @@ int main(int argc, char** argv)
     }
 
     char rb_a[32], rb_b[32];
+
+    /* THIS section reads the tape's speed, so the loop has to be the tone end
+     * to end -- the playhead section above leaves a take with a tone in its
+     * first fifth. */
+    set("loop_clear", "Clear");
+    render(1.6, -1, -1, 0, 0);
+    record_loop(1.0, 0.0, 1.0);
 
     set("looper_pitch", "2.0");
     get("looper_pitch", rb_a, sizeof rb_a);
