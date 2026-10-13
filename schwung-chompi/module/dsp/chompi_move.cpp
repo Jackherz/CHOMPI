@@ -193,6 +193,10 @@ struct ChompiInstance
         float warble = 0.1f, delay_time = 0.5f, delay_feedback = 0.f;
         float reverb = 0.f, final_comp = 0.f, input_gain = 1.f;
         float looper_pitch = 1.f, looper_scrub = 0.f, looper_dub_gain = 1.f;
+        /* PORT PATCH P26: the tape's window -- the two fractions of the take
+         * the loop turns over between. The engine's own defaults (0 and 1,
+         * the whole take) are what these start as. */
+        float looper_start = 0.f, looper_end = 1.f;
         int   input_monitor = 1, octave = 0, bank = 0;
         char  input_source[8]  = "line";
         char  monitor_mode[8]  = "both";
@@ -644,6 +648,23 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         if(turn != 0.f)
             e.MoveLooperHead(turn);
     }
+    else if(strcmp(key, "looper_start") == 0)
+    {
+        /* PORT PATCH P26: where the loop's window begins, as a fraction of
+         * the take. Stored as the ENGINE took it (it clamps to 0..1 and
+         * leaves the order of the pair alone -- see FileSampler), because a
+         * float cell takes its dial position from what it is handed, so a
+         * read-back that disagreed with the engine would put the pointer
+         * somewhere the tape is not. */
+        e.SetLooperWindowStart(f);
+        inst->saved.looper_start = e.GetLooperWindowStart();
+    }
+    else if(strcmp(key, "looper_end") == 0)
+    {
+        /* The other end of the same window; see above. */
+        e.SetLooperWindowEnd(f);
+        inst->saved.looper_end = e.GetLooperWindowEnd();
+    }
     else if(strcmp(key, "looper_dub_gain") == 0)
     {
         /* The host writes the knob's absolute value. IncrementDubGain adds,
@@ -856,6 +877,14 @@ static const char* kChainParams
       "{\"key\":\"looper_pitch\",\"name\":\"Loop Pitch\",\"type\":\"float\",\"min\":-2,\"max\":2,\"step\":0.01,\"default\":1},"
       "{\"key\":\"looper_scrub\",\"name\":\"Scrub\",\"type\":\"float\",\"min\":-2,\"max\":2,\"step\":0.01,\"default\":0},"
       "{\"key\":\"looper_dub_gain\",\"name\":\"Dub Gain\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
+      /* PORT PATCH P26: the tape's window. "Loop Start"/"Loop End" is the
+       * host's own vocabulary for a bound -- its markerKind classifies a cell
+       * as loopStart/loopEnd by "loop" plus an end word in the KEY OR NAME,
+       * and that is what draws a bound as a bracket instead of as the
+       * playback cursor. short_name keeps the cell label inside the
+       * 5-character budget a cell actually has. */
+      "{\"key\":\"looper_start\",\"name\":\"Loop Start\",\"short_name\":\"Strt\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"looper_end\",\"name\":\"Loop End\",\"short_name\":\"End\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
       "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
       "{\"key\":\"sample_clear\",\"name\":\"Clear\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"],\"default\":0},"
       "{\"key\":\"record\",\"name\":\"Chompi Rec\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":0},"
@@ -895,7 +924,7 @@ static const char* kUiHierarchy
       "{\"key\":\"looper_pitch\"},"
       "{\"key\":\"looper_scrub\"},"
       "{\"key\":\"looper_dub_gain\"},"
-      "{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\"]},"
+      "{\"key\":\"looper_start\"},\"{\"key\":\"looper_end\"},\"{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\",\"looper_start\",\"looper_end\"]},"
       "\"recorder\":{\"label\":\"Recorder\",\"params\":[{\"key\":\"record\"},"
       "{\"key\":\"input_monitor\"},"
       "{\"key\":\"input_gain\"},"
@@ -1304,6 +1333,16 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         inst->saved.looper_scrub = head;
         return snprintf(buf, buf_len, "%.4f", head);
     }
+    if(strcmp(key, "looper_start") == 0)
+        /* PORT PATCH P26: the two ends of the window the loop turns over in,
+         * as fractions of the take. Numbers, not text: a float cell takes its
+         * dial position from this, and a label here parks the pointer at
+         * zero. A crossed pair reads back as written -- the engine puts the
+         * two in order at its own use, so the screen keeps showing what the
+         * user set, which is also how the reference module does it. */
+        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_start);
+    if(strcmp(key, "looper_end") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_end);
     if(strcmp(key, "looper_dub_gain") == 0)
         /* Dub gain is the exception: its knob is the gain the engine is
          * actually applying, and IncrementLooperDubGain's slew is visible in

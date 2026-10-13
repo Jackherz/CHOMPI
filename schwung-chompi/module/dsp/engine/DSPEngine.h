@@ -1296,6 +1296,11 @@ namespace daisy
         inline bool GetLooperIsEmpty() { return looper.GetIsEmpty(); }
         inline float GetLooperPosition() { return looper.GetPosition(); }
         inline float GetLooperPitch() { return looper.GetPitch(); }
+        /* PORT PATCH P26: the tape's window, as two fractions of the take. */
+        inline void SetLooperWindowStart(float f) { looper.SetWindowStart(f); }
+        inline void SetLooperWindowEnd(float f) { looper.SetWindowEnd(f); }
+        inline float GetLooperWindowStart() { return looper.GetWindowStart(); }
+        inline float GetLooperWindowEnd() { return looper.GetWindowEnd(); }
 
         /* PORT PATCH P25: the port's Scrub is a TAPE PLAYHEAD -- it moves the
          * head to another part of the loop (and its knob reads back where the

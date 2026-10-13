@@ -45,6 +45,12 @@ namespace daisy
 
         void Process(float* out_l, float* out_r, size_t size)
         {
+            /* PORT PATCH P26: derive the tape's window from its two fractions
+             * once a block -- cheap, and it means a take being recorded or a
+             * turned knob is picked up without every sample doing the
+             * arithmetic. */
+            looper.PerBlock();
+
             if(IsFirstRecording() && !IsRecording() && !looper.IsResetting())
                 return;
 
@@ -145,6 +151,13 @@ namespace daisy
         inline void SetReverse(bool rev) { looper.SetReverse(rev); }
         inline void SetScrub(float scrub) { looper.SetScrub(scrub); }
         inline float GetScrub() { return looper.GetScrub(); }
+        /* PORT PATCH P26: the tape's window -- the two fractions of the take
+         * the loop turns over between. Stored as written (see FileSampler),
+         * so a crossed pair is a span, not a snap-back. */
+        inline void SetWindowStart(float val) { looper.SetWindowStart(val); }
+        inline void SetWindowEnd(float val) { looper.SetWindowEnd(val); }
+        inline float GetWindowStart() { return looper.GetWindowStart(); }
+        inline float GetWindowEnd() { return looper.GetWindowEnd(); }
         inline bool GetReverse() { return looper.GetReverse(); }
 
         void RecordButton(bool rising)

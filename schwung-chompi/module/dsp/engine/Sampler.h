@@ -25,9 +25,118 @@ namespace daisy
             lim_r_.Init();
         }
 
+        /** PORT PATCH P26: the tape's WINDOW -- where the loop turns over.
+         *
+         *  Until now the loop was always the whole take. It still is by
+         *  default (start 0, end 1), but the window is now a real thing the
+         *  read head turns over in, because that is what makes "End" a loop
+         *  bound rather than a label: the reference module for this work
+         *  (forgetful) keeps start/end as fractions of the take, derives them
+         *  into sample positions every block, and reads the take between
+         *  them.
+         *
+         *  Three rules are theirs, and they are the reason this is not just a
+         *  subtraction:
+         *
+         *  1. ORDER IS ENFORCED HERE, NOT IN THE SETTER. A knob that snaps
+         *     back under the hand reads as a broken control, so the two
+         *     fractions are stored as written and put in order at use. (For
+         *     now a crossed pair means the span between them, played in the
+         *     tape's own direction; running the window backwards, which is
+         *     what a tape does when you cross the ends over, is the next step
+         *     and needs the direction glide that goes with it.)
+         *  2. THE HEAD RE-ENTERS AT THE EDGE IT IS TRAVELLING AWAY FROM, or it
+         *     lands on the boundary it is about to cross and wraps every
+         *     sample. Checking happens BEFORE the read, so nothing outside
+         *     the window is ever played, and a head parked exactly on an edge
+         *     starts moving instead of sitting there.
+         *  3. THERE IS A MINIMUM SPAN, because the 480-sample end fade has to
+         *     have something to fade over.
+         *
+         *  Window = 0..1 is the old behaviour exactly, which is what keeps
+         *  every existing bench result valid. */
+        inline uint32_t WindowBase() const { return win_lo_; }
+        inline uint32_t WindowTop() const { return win_hi_ >= 2 ? win_hi_ - 2 : 0; }
+
+        inline bool WindowOutside()
+        {
+            const uint32_t head = ram_buff.GetReadHead();
+            return reverse_ ? (head <= win_lo_) : (head >= win_hi_);
+        }
+
+        inline void ReenterWindow() { ReadJump(reverse_ ? WindowTop() : WindowBase()); }
+
+        /** What is left of the window in the direction the tape is running --
+         *  the window's answer to RamBuffer::GetRemainingRead, and the thing
+         *  the end fade counts down. */
+        inline size_t GetRemainingWindow(bool rev)
+        {
+            const uint32_t head = ram_buff.GetReadHead();
+            if(!rev)
+                return head < win_hi_ ? (win_hi_ - head) : 0;
+            return head > win_lo_ ? (head - win_lo_) : 0;
+        }
+
+        /** Derive the window in samples from the two fractions. Once a block,
+         *  like the reference module: cheap, and it means a take being
+         *  recorded or a changed fraction is picked up without every sample
+         *  doing the arithmetic. */
+        void PerBlock()
+        {
+            /* in samples, kept even so a stereo pair stays a pair */
+            const uint32_t size = static_cast<uint32_t>(ram_buff.GetSize()) & ~1u;
+            if(size < kMinWindowSamples)
+            {
+                win_lo_ = 0;
+                win_hi_ = size;
+                return;
+            }
+
+            uint32_t lo = static_cast<uint32_t>(window_start_ * static_cast<float>(size)) & ~1u;
+            uint32_t hi = static_cast<uint32_t>(window_end_ * static_cast<float>(size)) & ~1u;
+            if(hi < lo)
+            {
+                const uint32_t t = lo;
+                lo = hi;
+                hi = t;
+            }
+            if(hi > size)
+                hi = size;
+            if(hi - lo < kMinWindowSamples)
+                hi = lo + kMinWindowSamples;
+            if(hi > size)
+            {
+                hi = size;
+                lo = hi - kMinWindowSamples;
+            }
+
+            win_lo_ = lo;
+            win_hi_ = hi;
+        }
+
+        /* The control's own range is clamped here; the RELATIONSHIP between
+         * the two is not (see the note above). */
+        void SetWindowStart(float f)
+        {
+            window_start_ = f < 0.f ? 0.f : (f > 1.f ? 1.f : f);
+            PerBlock();
+        }
+
+        void SetWindowEnd(float f)
+        {
+            window_end_ = f < 0.f ? 0.f : (f > 1.f ? 1.f : f);
+            PerBlock();
+        }
+
+        inline float GetWindowStart() const { return window_start_; }
+        inline float GetWindowEnd() const { return window_end_; }
+
         void ReadJumpStart()
         {
-            ReadJump(reverse_ ? ram_buff.GetSize() : 0);
+            /* PORT PATCH P26: "start" means the edge the tape is playing AWAY
+             * from -- the tail of the window when it runs backwards, the head
+             * of it when it runs forwards. */
+            ReadJump(reverse_ ? WindowTop() : WindowBase());
         }
 
         void WriteJumpStart()
@@ -174,13 +283,24 @@ namespace daisy
                     {
                         al = bl;
                         ar = br;
+
+                        /* PORT PATCH P26: turn over at the WINDOW's edge, and
+                         * re-enter at the edge the head is travelling away
+                         * from -- checked BEFORE the read, so no sample from
+                         * outside the window is ever played, and so a head
+                         * parked exactly on an edge (by a scrub, a window
+                         * move, or a reverse flip) starts moving again instead
+                         * of sitting there. The old post-read test asked the
+                         * buffer's own ends and jumped to
+                         * (reverse_ ? size : 0) -- which parks a backwards
+                         * tape on the very edge it is about to cross, and is
+                         * where the parked-playhead stall came from. */
+                        if(WindowOutside())
+                            ReenterWindow();
+
                         ram_buff.StereoRead(&bl, &br, reverse_);
 
-                        if(ram_buff.ReadLoop(reverse_))
-                        {
-                            ReadJumpStart();
-                        }
-                        else if(ram_buff.GetRemainingRead(reverse_) <= 480 && loop_env_dec > 0.f)
+                        if(GetRemainingWindow(reverse_) <= 480 && loop_env_dec > 0.f)
                         {
                             loop_env_dec = -1.f * loop_env_dec_val;
                         }                    
@@ -194,8 +314,11 @@ namespace daisy
                         rev_pushback = false;
 
                         loop_env += loop_env_dec;
-                        const bool ote = (reverse_ && ram_buff.GetReadHead() > (ram_buff.GetSize() - 50))
-                                         || (!reverse_ && ram_buff.GetReadHead() < 50);
+                        /* the window's own two edges, in signed maths so a
+                         * base near zero cannot underflow */
+                        const int32_t head_at = static_cast<int32_t>(ram_buff.GetReadHead());
+                        const bool ote = (reverse_ && head_at > static_cast<int32_t>(WindowTop()) - 50)
+                                         || (!reverse_ && head_at < static_cast<int32_t>(WindowBase()) + 50);
                         if(loop_env < 0.f && ote)
                         {
                             loop_env = 0.f;
@@ -355,6 +478,15 @@ namespace daisy
         /** Varispeed handling */
         float varispeed_factor;
         float rpos_frac_;
+
+        /** PORT PATCH P26: the window, as two fractions of the take and the
+         *  sample positions they derive to (see ReadJumpStart above). */
+        float window_start_ = 0.f, window_end_ = 1.f;
+        uint32_t win_lo_ = 0, win_hi_ = 0;
+        /* ~23 ms at 44.1 kHz. The top of the window is where the 480-sample
+         * end fade runs, so a window shorter than that would fade into its
+         * own beginning. */
+        const uint32_t kMinWindowSamples = 1024;
 
         /** reverse handling */
         bool reverse_;
