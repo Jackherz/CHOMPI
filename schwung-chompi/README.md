@@ -323,7 +323,7 @@ make host && make tools
 # The behavioural probes. Each builds in a second and prints its own verdict.
 #   sample_map_probe  assign a WAV, reload the plugin, check what plays
 #   slot_knob_probe   the slot knob, fast playing, and a vanished file must
-#                     none of them wedge the voices (see VENDORED P12/P13)
+#                     none of them wedge the voices (see VENDORED P12/P13/P23)
 #   unload_probe      load / play / destroy / dlclose -- the host's own removal
 #                     sequence, which must not crash the host
 #   mode_bank_probe   which sample each mode/bank/slot plays, measured as a
@@ -350,9 +350,12 @@ mkdir -p /tmp/kboct/samples && cp build/chompi_move.so /tmp/kboct/
 host does, plays a note per block group and writes a WAV. Three scenarios:
 `ram` (CHOMPI's built-in RAM buffer — it pins `slot` 15, which is where that
 lives), `cubbi` (streams `samples/cubbi_a1.wav` off disk), `record` (line-in
-capture into the looper). Peaks at this revision ≈ 1748 / 3176 / 3206; the
-figures move a little with the FX defaults and the sample set, so treat them as
-"not silent, in the same range" rather than exact. Silence means a regression,
+capture into the looper). With the three files this repo ships, peaks
+at this revision are ≈ 1466 / 1007 / 3229 (`ram` / `cubbi` / `record`); they
+move with the FX defaults and the sample set — the tone-labelled set
+`tools/make_probe_samples.py` writes is hot enough to reach ~3200 in the cubbi
+scenario too — so treat them as "not silent, in the same range" rather than
+exact. Silence means a regression,
 and `make render` is the smoke test.
 
 ## Status

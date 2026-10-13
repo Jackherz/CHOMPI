@@ -92,6 +92,16 @@ bundled few. To stage the set locally instead (for the offline probes):
 make samples-full          # copies cubbi_* + jammi_* into samples/ (~161 MB)
 ```
 
+**Every card sample has a `_double` beside it** — the same audio at twice the
+speed (half the frames, an octave up), which the reader switches to above 1.5×
+so the top of a slot's octave is not read from a thinned-out copy. The three
+bundled files have none, and the module must be fully playable without them:
+above 1.5× a pad then plays the one copy it has, at the right pitch, with the
+aliasing the double exists to avoid. Both states are covered offline
+(`tools/keybed_octave_probe` passes on a tree with no companions, with a real
+companion, and with a 0-byte one) and worth one listen each on the device —
+see step 3.1 and the P23 row in "What a failure looks like".
+
 ---
 
 ## 1. On-device ABI probe (no UI, no chain host)
@@ -199,6 +209,14 @@ In order, each step isolates one subsystem:
    sample at its own speed. The three pads a piano leaves empty (above C,
    above F, and above the octave C) are not silent: each plays the white key
    below it, one octave higher. `octave` transposes the whole keyboard.
+   Then the **top of the keybed**, where the sample is read above 1.5×: sweeps
+   of the top two rows and the top-gap pad must all *sound* (with a companion
+   file they are clean, without one they are a little aliased), and playing
+   them must not leave a 0-byte `_double` file behind. On the device:
+   `ssh ableton@move.local "ls -la …/chompi/samples/ | grep double"` before and
+   after — nothing may appear, and nothing already there may grow. Sliding
+   `slot` or `bank` across while pressing any key must keep the keybed alive
+   (P23's wedge was exactly this: silence that only a reload fixed).
 2. **Streaming under a load spike**: hold several keys in a row and listen for
    dropouts. This is the untested bit — on real hardware the reads contend
    with whatever else touches the filesystem. If you hear clicks, the fix is
@@ -230,6 +248,11 @@ In order, each step isolates one subsystem:
 9. **The ugly cases**: pull the sample files out from under it, load a set with
    a missing bank, switch `voice_mode` mid-note. It should stay silent and
    stable, not reboot the chain.
+   A companion file is part of this: truncate one (`: > samples/cubbi_a1_double.wav`)
+   and play the pad above 1.5× that uses it — the pad plays the base sample, and
+   the keybed keeps working. Delete it and the same. The reader treats a
+   companion that is missing, empty or un-openable as absent; it must never
+   swap onto one.
 
 ---
 
@@ -320,6 +343,7 @@ and it will be silent rather than noisy, and `debug_view` will name it.
 | Loads, but no knobs / no pad layout | `serve_params` on the device (level 1): `chain_params`, `ui_hierarchy` |
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
 | Sound went away and never came back | ask for `debug_voice`: a voice with `p1` and `op1` is one whose open failed and stuck. Deleted/renamed sample files do this; P12/P13 in `VENDORED.md` are the fix |
+| Silent after playing the *top* of the keybed (or after sweeping `slot`/`bank`), fine again after a reload | a `_double` companion that is not there was opened as a 0-byte placeholder and streamed forever — P23 in `VENDORED.md`. Check `ls -la …/chompi/samples/ \| grep double` for a 0-byte file; the fixed reader ignores it and plays the base sample (rebuild/redeploy if you are on an older `.so`) |
 | One key is silent, its neighbours play | that slot's file is gone or unreadable — the assignment still points at it, so clear it (`CLR`) or reassign |
 | Only the first key or two make sound, the rest of the Samples page is silent | the device is still on the three bundled WAVs — `make deploy-full` (this is the classic one; step 0 has the whole story) |
 | In JAMMI, `slot`/`bank` seem to do nothing | they bind on the **next key press** by design (VENDORED P14/P17), and slot 15 is the RAM buffer, not a file — press a key after turning the knob, and check `debug_voice`'s summary line (`mode=… bank=… sel=…`) |

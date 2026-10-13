@@ -74,7 +74,7 @@ $(HOST_OUT): $(PORT_SRC) $(wildcard $(DSP_DIR)/engine/*.h) $(wildcard $(DSP_DIR)
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ $(PORT_SRC) $(LDFLAGS)
 
-render: $(HOST_OUT)
+render: $(HOST_OUT) $(BUILD)/render_test
 	@mkdir -p $(BUILD)/render
 	./$(BUILD)/render_test $(HOST_OUT) $(BUILD)/render/chompi_ram.wav ram samples 6
 	./$(BUILD)/render_test $(HOST_OUT) $(BUILD)/render/chompi_cubbi.wav cubbi samples 6
