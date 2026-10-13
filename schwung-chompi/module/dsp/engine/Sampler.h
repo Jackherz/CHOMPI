@@ -61,7 +61,15 @@ namespace daisy
         inline bool WindowOutside()
         {
             const uint32_t head = ram_buff.GetReadHead();
-            return reverse_ ? (head <= win_lo_) : (head >= win_hi_);
+            /* THE PAIR, not the head. A stereo read takes two samples: forward
+             * that is mem[head..head+1], backwards mem[head-2..head-1]. Asking
+             * only whether the head has passed the edge is not enough: a scrub
+             * move is a whole number of samples and can leave the head on an
+             * ODD one, where it can neither satisfy >= win_hi_ nor be read as a
+             * pair, so it sits one sample short of the top edge forever. That
+             * is the parked-playhead stall, and it was intermittent because it
+             * took an odd landing to trigger it. */
+            return reverse_ ? (head < win_lo_ + 2) : (head + 2 > win_hi_);
         }
 
         inline void ReenterWindow() { ReadJump(reverse_ ? WindowTop() : WindowBase()); }
@@ -447,6 +455,12 @@ namespace daisy
             pos %= size;
             if(pos < 0)
                 pos += size;
+            /* Samples, not frames: a head left on an odd sample is a head the
+             * stereo read cannot take a pair at, and (see WindowOutside) one
+             * that can sit one sample short of the window's top edge forever.
+             * Every other way the head moves -- StereoRead, ReadJumpStart --
+             * moves it in pairs, so a move has to land on one. */
+            pos &= ~1;
             ram_buff.SetReadHead(static_cast<size_t>(pos));
         }
 

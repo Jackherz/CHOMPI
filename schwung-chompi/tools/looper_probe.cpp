@@ -191,6 +191,18 @@ static void start_tape()
     render(0.25, -1, -1, 0, 0);
 }
 
+/* Start it without the pre-roll above. A quarter of a second is enough to walk
+ * a parked head PAST the tone a "does it play from where it was parked" check
+ * is listening for (the tone is a eighth of a 1.6 s take), so those checks have
+ * to start the tape INSIDE the window they measure. */
+static void start_tape_now()
+{
+    char b[32];
+    get("looper_playing", b, sizeof b);
+    if(b[0] != '1')
+        set("looper_play", "Trig");
+}
+
 /* Ask the Scrub knob for a position: READ the cell first (it reports where the
  * head is, and that is the base the host turns from), then write the position
  * wanted. The knob is relative, so the write is the difference between the two
@@ -216,6 +228,29 @@ static double record_loop(double seconds, double in_from, double in_to)
     render(seconds, in_from, in_to, seconds, seconds); /* measure nothing */
     set("looper_record", "lorec"); /* stop: first record ends, playback begins */
     return started ? seconds : 0.0;
+}
+
+/* How many times the take's tone comes round in `seconds`: runs of loud audio,
+ * counted at their onset. This is the LAP COUNT, and it is the measure to use
+ * for a window -- a level says how loud the tape is, which the write head's own
+ * smear moves around, but a lap count says how long the loop is.
+ *
+ * The reference module's suite measures its window the same way (by period,
+ * from a seam it can see), for the same reason. */
+static int tone_onsets(double seconds, double threshold = 0.02)
+{
+    int onsets = 0;
+    bool loud = false;
+    const int steps = (int)(seconds / 0.1);
+    for(int k = 0; k < steps; k++)
+    {
+        const double r = render(0.1, -1, -1, 0.0, 0.1);
+        const bool now = r > threshold;
+        if(now && !loud)
+            onsets++;
+        loud = now;
+    }
+    return onsets;
 }
 
 /* Where the tape's read head is, 0..1 of the loop (the engine's diagnostic).
@@ -464,10 +499,14 @@ int main(int argc, char** argv)
     scrub_to(0.25);
     render(0.15, -1, -1, 0, 0);
     const double after = tape_position();
-    get("looper_scrub", buf, sizeof buf);
-    snprintf(buf, sizeof buf, "head %.4f -> %.4f, cell %s", before, after, buf);
+    /* TWO buffers. Reading the cell into the same buffer this is about to be
+     * formatted into is undefined, and it produced a garbled message that
+     * atof() then read as zero -- which is a false failure, not a finding. */
+    char cell[16];
+    get("looper_scrub", cell, sizeof cell);
+    snprintf(buf, sizeof buf, "head %.4f -> %.4f, cell %s", before, after, cell);
     check("a parked turn puts the head where it was sent, and the cell reads it",
-          fabs(after - 0.25) < 0.03 && fabs(atof(buf) - after) < 0.01, buf);
+          fabs(after - 0.25) < 0.03 && fabs(atof(cell) - after) < 0.01, buf);
 
     /* The same value again is not a turn: the host re-writes what it shows. */
     char same[32];
@@ -498,21 +537,124 @@ int main(int argc, char** argv)
     stop_tape();
     scrub_to(0.90);
     render(0.1, -1, -1, 0, 0);
-    start_tape(); /* play from there */
-    const double near_seam = render(0.5, -1, -1, 0.05, 0.45);
-    snprintf(buf, sizeof buf, "rms=%.4f", near_seam);
+    const double parked_at = tape_position();
+    start_tape_now(); /* no pre-roll: the head must still be where it was parked */
+    const double near_seam = render(2.5, -1, -1, 0.0, 2.5);
+    snprintf(buf, sizeof buf, "rms=%.4f, head %.4f -> %.4f", near_seam, parked_at,
+             tape_position());
     check("parked before the tone, playback plays it straight away",
           near_seam > 0.01, buf);
 
     stop_tape();
     scrub_to(0.30);
     render(0.1, -1, -1, 0, 0);
-    start_tape();
-    const double past_tone = render(0.5, -1, -1, 0.05, 0.45);
-    snprintf(buf, sizeof buf, "rms=%.4f", past_tone);
+    start_tape_now();
+    const double past_tone = render(0.9, -1, -1, 0.0, 0.9);
+    snprintf(buf, sizeof buf, "rms=%.4f (one pass would have reached the tone)", past_tone);
     check("parked past the tone, it waits for the loop to come round",
           past_tone < 0.004, buf);
     stop_tape(); /* leave the tape parked for whatever runs next */
+
+    printf("\n--- The tape's window: Loop Start and Loop End ----------------\n");
+    /* A CLEAN take first. The FX sections above leave a reverb tail all over
+     * the tape, and a smear is exactly what hides the thing these checks
+     * listen for: the tone, and its absence. */
+    set("reverb", "0");
+    set("delay_feedback", "0");
+    set("warble", "0");
+    set("loop_clear", "Clear");
+    render(1.6, -1, -1, 0, 0);
+    record_loop(1.6, 0.0, 0.2);
+    stop_tape();
+    printf("  (head %.4f, playing %s)\n",
+           tape_position(), (get("looper_playing", buf, sizeof buf), buf));
+    /* The take on the tape is the one the scrub section left: 1.6 s, with the
+     * tone in its first eighth. That is what makes these bounds audible. */
+    get("looper_start", buf, sizeof buf);
+    const double w0 = atof(buf);
+    get("looper_end", buf, sizeof buf);
+    const double w1 = atof(buf);
+    snprintf(buf, sizeof buf, "start %.4f end %.4f", w0, w1);
+    check("a fresh take is the whole window", fabs(w0) < 0.001 && fabs(w1 - 1.0) < 0.001, buf);
+
+    /* A TRACE, printed rather than asserted. The head per 0.4 s is the rate
+     * the tape is actually running at, and the readings beside it are what the
+     * transport thinks -- which is how a stall, a slow slew, a stopped tape and
+     * a long take are told apart. */
+    scrub_to(0.0);
+    start_tape_now();
+    for(int k = 0; k < 10; k++)
+    {
+        const double r = render(0.4, -1, -1, 0.0, 0.4);
+        char rev[8], pit[16], vs[16];
+        get("looper_reverse", rev, sizeof rev);
+        get("looper_pitch", pit, sizeof pit);
+        get("varspeed", vs, sizeof vs);
+        printf("  t=%.1f head=%.4f rms=%.4f rev=%s pitch=%s varspeed=%s%s\n",
+               0.4 * (k + 1), tape_position(), r, rev, pit, vs,
+               (r < 0.0005 ? "   <- quiet" : ""));
+    }
+    stop_tape();
+
+    /* THE BOUNDS ARE REAL, measured in LAPS. The tone sits in the take's first
+     * eighth, so counting how often it comes round over a fixed three seconds
+     * counts how long the loop is -- twice the laps means half the loop. A
+     * level reading cannot say this: the write head re-records what it plays at
+     * its own position, so content smears across the take and every window
+     * ends up carrying some of the tone. */
+    set("looper_start", "0.0");
+    set("looper_end", "1.0");
+    scrub_to(0.0);
+    start_tape_now();
+    const int laps_whole = tone_onsets(3.0);
+    stop_tape();
+
+    set("looper_end", "0.5");
+    scrub_to(0.0);
+    start_tape_now();
+    const int laps_half = tone_onsets(3.0);
+    stop_tape();
+
+    /* And a window that starts AFTER the tone has none of it to play at all. */
+    set("looper_start", "0.5");
+    set("looper_end", "1.0");
+    scrub_to(0.5);
+    start_tape_now();
+    const int laps_tail = tone_onsets(3.0);
+    char playing[8];
+    get("looper_playing", playing, sizeof playing);
+    stop_tape();
+
+    snprintf(buf, sizeof buf, "whole %d laps, half %d laps, past-the-tone %d laps",
+             laps_whole, laps_half, laps_tail);
+    check("the window is a length: half a take hears the tone about twice as often",
+          laps_whole >= 1 && laps_half >= laps_whole * 2 - 1, buf);
+    check("a window past the tone has no tone to play",
+          playing[0] == '1' && laps_tail == 0, buf);
+
+    /* The pair reads back AS WRITTEN, in either order: the engine puts the two
+     * in order at its own use, so a crossed pair is a span rather than a knob
+     * that snaps back under the hand. */
+    set("looper_start", "0.6");
+    set("looper_end", "1.0");
+    get("looper_start", buf, sizeof buf);
+    const double r0 = atof(buf);
+    get("looper_end", buf, sizeof buf);
+    const double r1 = atof(buf);
+    snprintf(buf, sizeof buf, "%.4f / %.4f", r0, r1);
+    check("the window reads back what it was set to",
+          fabs(r0 - 0.6) < 0.001 && fabs(r1 - 1.0) < 0.001, buf);
+
+    set("looper_end", "0.2");
+    get("looper_end", buf, sizeof buf);
+    const double crossed = atof(buf);
+    get("looper_start", buf, sizeof buf);
+    snprintf(buf, sizeof buf, "start %.4f, end %.4f", atof(buf), crossed);
+    check("a crossed pair is not clamped in the setter",
+          fabs(crossed - 0.2) < 0.001, buf);
+
+    set("looper_start", "0.0");
+    set("looper_end", "1.0");
 
     printf("\n--- Loop Pitch and Loop Rev: the knob and the tape --------------\n");
     /* Two things are being checked at once, and they are different failures:
