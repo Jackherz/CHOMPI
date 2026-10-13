@@ -99,6 +99,64 @@ static double render(double seconds, double in_from, double in_to, double from, 
     return n ? sqrt(sum / (double)n) : 0.0;
 }
 
+/* Power at one frequency, for the pitch checks below. */
+static double goertzel(const double* x, long n, double f)
+{
+    const double w  = 2.0 * M_PI * f / (double)MOVE_SAMPLE_RATE;
+    const double c  = 2.0 * cos(w);
+    double       s0 = 0.0, s1 = 0.0, s2 = 0.0;
+    for(long i = 0; i < n; i++)
+    {
+        s0 = x[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return s1 * s1 + s2 * s2 - c * s1 * s2;
+}
+
+/* The loudest frequency in [from, to) of the output. The loop used below holds
+ * a steady 440 Hz tone, so this reads the TAPE's speed -- 880 Hz at 2.00x --
+ * which is what tells a pitch write that reached the engine from one that only
+ * changed the number the cell shows. Line input is silent (nothing new is
+ * recorded), and the scan is coarse then refined, like the keybed probes'. */
+static double peak_hz(double from, double to)
+{
+    static double x[1 << 16];
+    int           n = 0;
+    int16_t       out[256];
+    double        t = 0.0;
+    const int     blocks = (int)(to * MOVE_SAMPLE_RATE / MOVE_FRAMES_PER_BLOCK);
+
+    for(int b = 0; b < blocks; b++)
+    {
+        api->render_block(inst, out, MOVE_FRAMES_PER_BLOCK);
+        for(int i = 0; i < MOVE_FRAMES_PER_BLOCK; i++)
+        {
+            const double tt = t + (double)i / MOVE_SAMPLE_RATE;
+            if(tt >= from && tt < to && n < (int)(sizeof x / sizeof x[0]))
+                x[n++] = out[2 * i] / 32768.0;
+        }
+        t += (double)MOVE_FRAMES_PER_BLOCK / MOVE_SAMPLE_RATE;
+        usleep(2900);
+    }
+    if(n < 64)
+        return 0.0;
+
+    double best_f = 0.0, best_e = 0.0;
+    for(double f = 100.0; f <= 2000.0; f += 10.0)
+    {
+        const double e = goertzel(x, n, f);
+        if(e > best_e) { best_e = e; best_f = f; }
+    }
+    for(double f = best_f - 10.0; f <= best_f + 10.0; f += 0.5)
+    {
+        if(f <= 0.0) continue;
+        const double e = goertzel(x, n, f);
+        if(e > best_e) { best_e = e; best_f = f; }
+    }
+    return best_f;
+}
+
 /* Records one loop: arm, play the burst, stop. Returns the loop's length in
  * seconds (the recording length), or 0 if the engine never started recording. */
 static double record_loop(double seconds, double in_from, double in_to)
@@ -375,6 +433,66 @@ int main(int argc, char** argv)
     check("the same position again is not a new turn", echo_move < 0.2 * turn_move, buf);
     get("looper_scrub", buf, sizeof buf);
     check("scrub reads back the position it was given", strcmp(buf, "2.0000") == 0, buf);
+
+    printf("\n--- Loop Pitch and Loop Rev: the knob and the tape --------------\n");
+    /* Two things are being checked at once, and they are different failures:
+     * the cell must READ BACK what it was set to (the host repaints
+     * get_param on release -- the reported symptom was the sound following the
+     * knob while the reading snapped home), and the number must reach the
+     * TAPE, which is what the 440 Hz tone in the loop measures. */
+    get("looper_playing", buf, sizeof buf);
+    if(buf[0] != '1')
+    {
+        set("looper_play", "Trig"); /* the transport was stopped for scrub */
+        render(0.3, -1, -1, 0, 0);
+    }
+
+    char rb_a[32], rb_b[32];
+
+    set("looper_pitch", "2.0");
+    get("looper_pitch", rb_a, sizeof rb_a);
+    render(0.6, -1, -1, 0, 0); /* the rate lerps onto the new speed */
+    const double hz_2x = peak_hz(0.2, 0.9);
+    snprintf(buf, sizeof buf, "read-back %s, tape %.1f Hz (want 880)", rb_a, hz_2x);
+    check("Loop Pitch sticks, and 2.00x is really twice as fast",
+          fabs(atof(rb_a) - 2.0) < 0.001 && fabs(hz_2x - 880.0) <= 8.0, buf);
+
+    set("looper_pitch", "1.0");
+    get("looper_pitch", rb_a, sizeof rb_a);
+    render(0.6, -1, -1, 0, 0);
+    const double hz_1x = peak_hz(0.2, 0.9);
+    snprintf(buf, sizeof buf, "read-back %s, tape %.1f Hz (want 440)", rb_a, hz_1x);
+    check("back at 1.00x it is the tone that was recorded",
+          fabs(atof(rb_a) - 1.0) < 0.001 && fabs(hz_1x - 440.0) <= 8.0, buf);
+
+    set("looper_reverse", "On");
+    get("looper_reverse", rb_a, sizeof rb_a);
+    get("looper_pitch", rb_b, sizeof rb_b);
+    snprintf(buf, sizeof buf, "reverse %s, pitch %s", rb_a, rb_b);
+    check("Loop Rev sticks, and the shared pitch reading follows it",
+          strcmp(rb_a, "On") == 0 && fabs(atof(rb_b) + 1.0) < 0.001, buf);
+
+    set("looper_reverse", "Off");
+    get("looper_reverse", rb_a, sizeof rb_a);
+    get("looper_pitch", rb_b, sizeof rb_b);
+    snprintf(buf, sizeof buf, "reverse %s, pitch %s", rb_a, rb_b);
+    check("and turning it back off does too",
+          strcmp(rb_a, "Off") == 0 && fabs(atof(rb_b) - 1.0) < 0.001, buf);
+
+    /* A clear winds the tape down and lands it at 1.00x forward, with nothing
+     * in the buffer: the knobs are put where the tape is, so they do not go on
+     * claiming a speed the empty loop cannot play at. */
+    set("looper_pitch", "2.0");
+    set("loop_clear", "Clear");
+    render(1.6, -1, -1, 0, 0);
+    get("looper_pitch", rb_a, sizeof rb_a);
+    get("looper_reverse", rb_b, sizeof rb_b);
+    char rb_c[32];
+    get("looper_scrub", rb_c, sizeof rb_c);
+    snprintf(buf, sizeof buf, "pitch %s, reverse %s, scrub %s", rb_a, rb_b, rb_c);
+    check("a clear leaves the knobs where the tape landed",
+          fabs(atof(rb_a) - 1.0) < 0.001 && strcmp(rb_b, "Off") == 0
+          && fabs(atof(rb_c)) < 0.001, buf);
 
     printf("\n%s (%d failure%s)\n", fails ? "VERDICT: FAIL" : "VERDICT: PASS", fails,
            fails == 1 ? "" : "s");

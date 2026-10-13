@@ -595,9 +595,30 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     else if(strcmp(key, "looper_play") == 0)
         e.ToggleLooperPlaying();
     else if(strcmp(key, "looper_reverse") == 0)
-        e.ResetLooperPitchQuant(), e.SetLooperPitch(on ? -1.f : 1.f);
+    {
+        /* Direction IS the loop's pitch value (a negative rate plays the tape
+         * backwards), so the two knobs carry one number here -- and both
+         * read-backs are moved with it. The hardware gets away with one
+         * encoder holding both because its UI redraws what it asked for; the
+         * Move host re-reads get_param, so a value that never lands in Saved
+         * snaps the knob back to its startup reading. */
+        const float dir = on ? -1.f : 1.f;
+        e.ResetLooperPitchQuant();
+        e.SetLooperPitch(dir);
+        inst->saved.looper_pitch = dir;
+        snprintf(inst->saved.looper_reverse, sizeof(inst->saved.looper_reverse), "%s",
+                 on ? "On" : "Off");
+    }
     else if(strcmp(key, "looper_pitch") == 0)
+    {
+        /* Store what we set, and let the sign move the Reverse cell with it:
+         * the two controls are one number on this instrument (see above), so
+         * a pitch write past zero is the tape turning around. */
+        inst->saved.looper_pitch = f;
+        snprintf(inst->saved.looper_reverse, sizeof(inst->saved.looper_reverse), "%s",
+                 f < 0.f ? "On" : "Off");
         e.SetLooperPitch(f);
+    }
     else if(strcmp(key, "looper_scrub") == 0)
     {
         /* The host writes the knob's absolute position, and the cell reads that
@@ -629,7 +650,21 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
          * what the hardware's record+play gesture clears -- an in-flight
          * recording included. */
         if(momentary_act(val))
+        {
             e.ClearLooper();
+            /* A clear winds the tape down and lands it at 1.00x, forward (the
+             * sampler's own reset block: SetVarispeed(1.f, true)), and the
+             * buffer it leaves is empty. On the hardware the encoder cannot be
+             * moved to say so -- its UI keeps whatever it last set -- but here
+             * the knob is ours, so the cells are put where the tape is about to
+             * be: otherwise Loop Pitch would go on reading a speed the cleared
+             * loop does not play at, which is the same disagreement between
+             * sound and screen this pair of knobs was just fixed for. */
+            inst->saved.looper_pitch   = 1.f;
+            inst->saved.looper_scrub   = 0.f;
+            snprintf(inst->saved.looper_reverse, sizeof(inst->saved.looper_reverse), "%s",
+                     "Off");
+        }
     }
     else if(strcmp(key, "fx_pre_loop") == 0)
     {
@@ -1234,7 +1269,14 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%s", loop ? "On" : "Off");
     }
 
-    /* Looper page. */
+    /* Looper page. Pitch, reverse and scrub answer the KNOB's position
+     * (Saved), which every one of their writes now stores -- the host reads
+     * this back on release and paints it, so a value that only reached the
+     * engine left the knob showing its startup reading while the loop played
+     * at the one the user turned to. The engine's own values are not the cell's
+     * value: its reverse flag follows the tape's slew (and does not move at all
+     * while the transport is stopped), and a clear lands the tape at 1.00x
+     * forward, which is why the clear path moves these saved values with it. */
     if(strcmp(key, "looper_reverse") == 0)
         return snprintf(buf, buf_len, "%s", inst->saved.looper_reverse);
     if(strcmp(key, "looper_pitch") == 0)
@@ -1242,6 +1284,9 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
     if(strcmp(key, "looper_scrub") == 0)
         return snprintf(buf, buf_len, "%.4f", inst->saved.looper_scrub);
     if(strcmp(key, "looper_dub_gain") == 0)
+        /* Dub gain is the exception: its knob is the gain the engine is
+         * actually applying, and IncrementLooperDubGain's slew is visible in
+         * the audio, so the engine is the honest reading here. */
         return snprintf(buf, buf_len, "%.4f", inst->engine.GetLooperDubGain());
     if(strcmp(key, "looper_record") == 0)
         /* The cell IS the live record state: "rec" while a pass is running,

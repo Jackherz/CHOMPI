@@ -110,7 +110,7 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | 15 keys (C3–C5) | the 32 pads, as a piano. One sample, every pad (see below) |
 | velocity-sensitive key press | note-on velocity → key request |
 | 8 knobs | `chain_params` — the on-screen controls, paged by the shadow UI |
-| pitch/speed fader | `varspeed`, `looper_pitch`, and `looper_scrub` — the wheel that nudges the tape while the looper is stopped (`looper_scrub` is the knob's POSITION; the engine gets the turn, VENDORED P24) |
+| pitch/speed fader | `varspeed`, `looper_pitch` / `looper_reverse` (one number: the loop's speed, with a negative value playing it backwards, so the two cells follow each other), and `looper_scrub` — the wheel that nudges the tape while the looper is stopped (`looper_scrub` is the knob's POSITION; the engine gets the turn, VENDORED P24). All of them read back the number they were set to — the host repaints `get_param` when a knob is released — and a `Clear Loop` returns them to 1.00x, forward, no nudge |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
 | rec / play buttons | `looper_record` (the cell reads `rec` while a pass runs, `lorec` when idle), `looper_play`, `record` |

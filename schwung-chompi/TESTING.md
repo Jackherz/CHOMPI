@@ -237,6 +237,11 @@ In order, each step isolates one subsystem:
    instead of layering; at 0.5 the old loop comes back at half its level. That
    law is hardware-shared (the sampler's write loop) and measured offline by
    `tools/looper_probe`, so anything else on the device is worth reporting.
+   **The knobs must stick**: turn `Loop Pitch` to 2 and let go — the cell keeps
+   reading 2.0000 (it used to snap home while the loop stayed transposed), the
+   tape is audibly twice as fast, and `Loop Rev` flips to `On` with the pitch
+   cell reading -1.0000. A `Clear Loop` puts all three back where the tape
+   lands: pitch 1.0000, reverse `Off`, scrub 0.0000.
 5. **One sample** (Samples page): pick a file. Every pad plays that file,
    pitched by the piano map above. There is no slot, bank or mode knob — a
    second file is not on the keybed until you pick it. On load, every knob
