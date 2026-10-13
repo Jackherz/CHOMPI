@@ -114,6 +114,7 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
 | rec / play buttons | `looper_record` (the cell reads `rec` while a pass runs, `lorec` when idle), `looper_play`, `record` |
+| overdub gain (the two keys beside play, +-0.1 each) | `looper_dub_gain` — the Looper page's `Dub Gain`, 0…1. Each overdub pass rewrites the loop as `old × gain + input`, so 1 layers the new take over the old loop (0.94× measured), 0.5 halves it (0.25×), and 0 replaces it outright. The change is slewed (~0.2 s) and a pass that finishes before the slew has arrived keeps more of the old loop — the engine's own behaviour, and the same on the hardware |
 | clear the loop (rec+play held) | `loop_clear` — the Looper page's `Clear Loop`, a momentary cell |
 | FX before or after the looper | `fx_pre_loop` — the Setup page's `FX Route`: `pre` / `post` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |
@@ -328,7 +329,9 @@ make host && make tools
 #                     sequence, which must not crash the host
 #   mode_bank_probe   which sample each mode/bank/slot plays, measured as a
 #                     frequency because every probe sample is a tone
-#   looper_probe      record, play and clear a loop; and where the FX sit
+#   looper_probe      record, play and clear a loop; the dub gain's per-pass
+#                     law (1 keeps, 0.5 halves, 0 erases); the record cell's
+#                     live state; and where the FX sit
 #   keybed_octave_probe  one slot = one octave of the pads: every pad's
 #                     slot and pitch, the octave knob, and the >1.5x case
 for p in sample_map_probe slot_knob_probe unload_probe mode_bank_probe looper_probe \

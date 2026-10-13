@@ -248,6 +248,66 @@ int main(int argc, char** argv)
     snprintf(buf, sizeof buf, "pre=%.4f post=%.4f", tail_pre, tail_post);
     check("FX-pre leaves the FX tail printed in the loop", tail_pre > 3.0 * tail_post, buf);
 
+    printf("\n--- the dub gain on a second pass -------------------------------\n");
+    /* The hardware's per-pass overdub gain (its two keys beside play nudge it
+     * by +-0.1). Each overdub pass rewrites the loop as
+     * `old * dub_gain + input` in the sampler's write loop, slew and limiter
+     * included -- so a pass at 1 keeps the old loop, at 0.5 halves it and at 0
+     * erases it. The knob is absolute where the hardware nudges, so it is
+     * measured as one; the point of the check is the LAW, which is the
+     * engine's, not a second one invented on the port side.
+     *
+     * Measured with SILENCE on the line input, so what is being watched is the
+     * tone recorded first and nothing else. Each gain gets a fresh loop, and
+     * the knob is set BEFORE the first pass: that is when the engine snaps the
+     * applied gain to the knob (LooperEngine::IncrementDubGain's `force`,
+     * `first_record && !record`), so the second pass does not spend its first
+     * second slewing toward a value the user set a moment ago -- on the
+     * hardware too, the slew is ~0.0001 a sample (about a fifth of a second)
+     * and a short pass never finishes arriving.
+     */
+    char v2[32];
+    double alone[3]  = {0.0, 0.0, 0.0};
+    double second[3] = {0.0, 0.0, 0.0};
+    const char*  gains[3]  = {"1.0", "0.5", "0"};
+
+    set("looper_dub_gain", "0.3");
+    get("looper_dub_gain", v2, sizeof v2);
+    const bool reads_03 = fabs(atof(v2) - 0.3) < 0.001;
+    set("looper_dub_gain", "0.7");
+    get("looper_dub_gain", v2, sizeof v2);
+    snprintf(buf, sizeof buf, "0.3 -> %s", v2);
+    check("the dub gain knob reads back what it was set to",
+          reads_03 && fabs(atof(v2) - 0.7) < 0.001, buf);
+    set("looper_dub_gain", "1");
+
+    for(int i = 0; i < 3; i++)
+    {
+        set("loop_clear", "Clear");
+        render(1.6, -1, -1, 0, 0); /* the clear winds down */
+        set("looper_dub_gain", gains[i]);
+        record_loop(1.0, 0.0, 1.0); /* the loop: a 1 kHz tone, whole pass */
+        render(0.4, -1, -1, 0, 0);
+        alone[i] = render(0.8, -1, -1, 0.15, 0.75);
+
+        set("looper_record", "rec");  /* the overdub pass, silence in */
+        render(0.05, -1, -1, 0, 0);
+        render(1.0, -1, -1, 0, 0);
+        set("looper_record", "lorec");
+        render(0.4, -1, -1, 0, 0);
+        second[i] = render(0.8, -1, -1, 0.15, 0.75);
+    }
+
+    const double r_keep = second[0] / alone[0];
+    const double r_half = second[1] / alone[1];
+    const double r_none = second[2] / alone[2];
+    snprintf(buf, sizeof buf, "gain 1 -> %.2f, gain 0.5 -> %.2f, gain 0 -> %.3f",
+             r_keep, r_half, r_none);
+    check("a pass at 1.0 keeps the old loop",    r_keep > 0.75, buf);
+    check("a pass at 0.5 halves its level",      r_half < 0.45 && r_half > 0.12, buf);
+    check("a pass at 0 erases it",               r_none < 0.05, buf);
+    set("looper_dub_gain", "1");
+
     printf("\n--- the record cell, and the scrub knob --------------------------\n");
     /* A fresh take that is a continuous tone: the read head's position is then
      * the whole story below, wherever it is parked. */

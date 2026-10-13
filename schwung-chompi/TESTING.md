@@ -230,6 +230,13 @@ In order, each step isolates one subsystem:
    Then **clear it**: the Looper page's `Clear Loop` cell. It is a tape stop —
    the loop winds down over about a second and then stays silent; recording
    again afterwards must make a fresh loop (not a dub of the cleared one).
+   **Overdub**: record a loop, play it back, then record again — the second
+   pass layers onto the old loop instead of replacing it (`Dub Gain` at 1), and
+   the record cell reads `rec` while the pass runs and `lorec` afterwards.
+   Turn `Dub Gain` to 0 before a pass and the pass *replaces* the old loop
+   instead of layering; at 0.5 the old loop comes back at half its level. That
+   law is hardware-shared (the sampler's write loop) and measured offline by
+   `tools/looper_probe`, so anything else on the device is worth reporting.
 5. **One sample** (Samples page): pick a file. Every pad plays that file,
    pitched by the piano map above. There is no slot, bank or mode knob — a
    second file is not on the keybed until you pick it. On load, every knob
