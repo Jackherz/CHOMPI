@@ -357,6 +357,33 @@ namespace daisy
             if(fname_rx_dbl != filename_dbl)
                 strcpy(fname_rx_dbl, filename_dbl);
 
+            /* PORT PATCH P23: a 2x companion has to be a DIFFERENT file that
+             * really has samples in it, or the voice must not swap onto it.
+             *
+             *  Two ways the old code got that wrong, both ending in silence.
+             *  A slot with an assigned sample (the port's "sample_file") hands
+             *  the engine the SAME path as the sample and its companion -- the
+             *  override is returned for both -- so "the companion" was the
+             *  sample itself, read at half rate (an octave low). And where the
+             *  companion is simply not there (a card without one, a file
+             *  removed while the module plays), the port's FatFS-compatible
+             *  open creates a 0-byte placeholder rather than failing, so the
+             *  voice streamed an empty file forever -- the slot_knob wedge.
+             *  Whether a companion exists is a fact about the disk, so ask the
+             *  disk by the name the engine derived, and only when this open is
+             *  about to use it: presses below 1.5x never pay for the stat, and
+             *  once a slot is known to have no companion it stops asking. */
+            const bool distinct_companion =
+                fname_rx_dbl[0] != '\0' && strcmp(fname_rx_dbl, fname_rx) != 0;
+
+            if(!distinct_companion)
+                double_available = false;
+            else if(double_available && varispeed_target * global_pitch > 1.5f)
+            {
+                FILINFO dbl_info;
+                double_available = f_stat(fname_rx_dbl, &dbl_info) == FR_OK && dbl_info.fsize > 0;
+            }
+
             bool open_double = varispeed_target * global_pitch > 1.5f && double_available;
             double_speed = open_double;
 
@@ -413,6 +440,28 @@ namespace daisy
         // call this post file load. recalculates end point and so on
         void FileOpened()
         {
+            /* PORT PATCH P23, the safety net under OpenFile's disk check: the
+             * companion was asked for and what landed is EMPTY -- a 0-byte
+             * placeholder the port's FatFS-compatible open creates for a name
+             * that is not there (a card without the prepared copy, a file
+             * removed while the module plays, a race between the stat and the
+             * open). Reading it is how a voice went silent for good: the FIFO
+             * never fills, "playing" stays on, and the whole keybed wedged.
+             * Forget the companion and play the file we have -- which is what
+             * P22 gives an assigned slot -- and zero the crossfade counter so
+             * the read rate is the plain varispeed from the next sample on,
+             * instead of the halved rate the double was owed. */
+            if(double_speed && f_size(&fptr_read) == 0)
+            {
+                if(open_requests_ != 0)
+                    open_requests_--;
+                double_available = false;
+                double_speed     = false;
+                double_speed_ctr = 0;
+                OpenFile(fname_rx, fname_rx_dbl, false);
+                return;
+            }
+
             SetStartPoint(fstart_);
             SetEndPoint(fend_);
  
@@ -434,6 +483,20 @@ namespace daisy
         {
             if(open_requests_ != 0)
                 open_requests_--;
+
+            /* PORT PATCH P23: a companion that will not open at all is the same
+             * story as one that is empty -- see FileOpened(). Keep the file the
+             * voice already has and stop claiming the companion; OpenFile only
+             * queues a CLOSE when the open it replaces is one the voice holds,
+             * so this second open lands cleanly on its own. */
+            if(double_speed)
+            {
+                double_available = false;
+                double_speed     = false;
+                double_speed_ctr = 0;
+                OpenFile(fname_rx, fname_rx_dbl, false);
+                return;
+            }
 
             const bool was_open = fptr_read.in_use.load(std::memory_order_relaxed);
             if(was_open)

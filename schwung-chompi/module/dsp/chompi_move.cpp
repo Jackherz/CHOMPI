@@ -193,6 +193,10 @@ struct ChompiInstance
         float warble = 0.1f, delay_time = 0.5f, delay_feedback = 0.f;
         float reverb = 0.f, final_comp = 0.f, input_gain = 1.f;
         float looper_pitch = 1.f, looper_scrub = 0.f, looper_dub_gain = 1.f;
+        /* PORT PATCH P26: the tape's window -- the two fractions of the take
+         * the loop turns over between. The engine's own defaults (0 and 1,
+         * the whole take) are what these start as. */
+        float looper_start = 0.f, looper_end = 1.f;
         int   input_monitor = 1, octave = 0, bank = 0;
         char  input_source[8]  = "line";
         char  monitor_mode[8]  = "both";
@@ -263,12 +267,17 @@ static void* chompi_io_worker(void* arg)
     sp.sched_priority = 0;
     pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
 
+    /* Off the board there are no cores to keep clear and no cpu_set_t at all:
+     * the host tools (and `make check-hierarchy` on a Mac) build this file for
+     * the machine that runs it, and the pin is the device's business. */
+#if defined(__linux__)
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(0, &set);
     CPU_SET(1, &set);
     CPU_SET(2, &set);
     pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
 
     while(true)
     {
@@ -393,7 +402,7 @@ static void join_worker_if_idle()
  *  click-free — the same path CHOMPI's UI used. */
 static void apply_state_json(ChompiInstance* inst, const char* json);
 
-/* Momentary enums ("-"/"Clear", "-"/"Trig") are written by the shadow UI as
+/* Momentary enums ("-"/"Clear") are written by the shadow UI as
  * the option NAME when it can read a current value back, and as the INDEX ("1")
  * when it cannot -- which is what happens here, because get_param answers -1
  * for an action that has no state. Accept both; only the idle option is a
@@ -575,15 +584,92 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         }
     }
     else if(strcmp(key, "looper_record") == 0)
-        e.ToggleLooperRecord();
+    {
+        /* The cell is a two-state read-out -- "lorec" idle, "rec" while a
+         * record pass runs (CHOMPI's vocabulary: the key is the looper's
+         * record key). A write is therefore a request for a STATE, not a
+         * fire-and-forget trigger: act only when the state asked for is not
+         * the state the looper is in. The host writes the value the cell shows
+         * and may write it again before the engine's flag has moved -- a
+         * commit, a repaint of the value it just read -- so a blind
+         * ToggleLooperRecord() on every write toggled twice on one press and
+         * stopped the take it had just started; LooperRecordWanted() counts
+         * the request that is still in flight. Anything that is not "rec"/"1"
+         * is read as the idle state, which is the safe direction: an
+         * unrecognised write can stop a pass, never start one. */
+        const bool want_rec = (strcmp(val, "rec") == 0) || (strcmp(val, "1") == 0);
+        if(want_rec != e.LooperRecordWanted())
+            e.ToggleLooperRecord();
+    }
     else if(strcmp(key, "looper_play") == 0)
         e.ToggleLooperPlaying();
     else if(strcmp(key, "looper_reverse") == 0)
-        e.ResetLooperPitchQuant(), e.SetLooperPitch(on ? -1.f : 1.f);
+    {
+        /* Direction IS the loop's pitch value (a negative rate plays the tape
+         * backwards), so the two knobs carry one number here -- and both
+         * read-backs are moved with it. The hardware gets away with one
+         * encoder holding both because its UI redraws what it asked for; the
+         * Move host re-reads get_param, so a value that never lands in Saved
+         * snaps the knob back to its startup reading. */
+        const float dir = on ? -1.f : 1.f;
+        e.ResetLooperPitchQuant();
+        e.SetLooperPitch(dir);
+        inst->saved.looper_pitch = dir;
+        snprintf(inst->saved.looper_reverse, sizeof(inst->saved.looper_reverse), "%s",
+                 on ? "On" : "Off");
+    }
     else if(strcmp(key, "looper_pitch") == 0)
+    {
+        /* Store what we set, and let the sign move the Reverse cell with it:
+         * the two controls are one number on this instrument (see above), so
+         * a pitch write past zero is the tape turning around. */
+        inst->saved.looper_pitch = f;
+        snprintf(inst->saved.looper_reverse, sizeof(inst->saved.looper_reverse), "%s",
+                 f < 0.f ? "On" : "Off");
         e.SetLooperPitch(f);
+    }
     else if(strcmp(key, "looper_scrub") == 0)
-        e.SetLooperScrub(f);
+    {
+        /* PORT PATCH P25: a TAPE PLAYHEAD, not the hardware's scrub wheel.
+         *
+         * The user asked for the knob that "moves to a different part of the
+         * loop in real time, like moving a tape playhead", so that is what this
+         * is now: one unit of the knob is one pass of the loop, and the write
+         * is a TURN (the difference from the value we last handed the host),
+         * which the engine applies as a move of the read head. It works while
+         * the loop plays -- the head jumps at once -- and while it is parked,
+         * where the next play starts from wherever the knob left the head.
+         *
+         * The turn is the difference because the host writes ABSOLUTE values:
+         * it reads the cell (which reports the head, see get_param), adds the
+         * turn, and writes the sum. Keeping Saved on the wire value here is
+         * what makes that sum a turn; get_param puts Saved back on the head at
+         * every read, so the base the host adds to is where the head really is.
+         *
+         * The hardware's rate nudge (FileSampler::SetScrub) is untouched in the
+         * engine and unused by this knob. */
+        const float turn = f - inst->saved.looper_scrub;
+        inst->saved.looper_scrub = f;
+        if(turn != 0.f)
+            e.MoveLooperHead(turn);
+    }
+    else if(strcmp(key, "looper_start") == 0)
+    {
+        /* PORT PATCH P26: where the loop's window begins, as a fraction of
+         * the take. Stored as the ENGINE took it (it clamps to 0..1 and
+         * leaves the order of the pair alone -- see FileSampler), because a
+         * float cell takes its dial position from what it is handed, so a
+         * read-back that disagreed with the engine would put the pointer
+         * somewhere the tape is not. */
+        e.SetLooperWindowStart(f);
+        inst->saved.looper_start = e.GetLooperWindowStart();
+    }
+    else if(strcmp(key, "looper_end") == 0)
+    {
+        /* The other end of the same window; see above. */
+        e.SetLooperWindowEnd(f);
+        inst->saved.looper_end = e.GetLooperWindowEnd();
+    }
     else if(strcmp(key, "looper_dub_gain") == 0)
     {
         /* The host writes the knob's absolute value. IncrementDubGain adds,
@@ -600,7 +686,21 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
          * what the hardware's record+play gesture clears -- an in-flight
          * recording included. */
         if(momentary_act(val))
+        {
             e.ClearLooper();
+            /* A clear winds the tape down and lands it at 1.00x, forward (the
+             * sampler's own reset block: SetVarispeed(1.f, true)), and the
+             * buffer it leaves is empty. On the hardware the encoder cannot be
+             * moved to say so -- its UI keeps whatever it last set -- but here
+             * the knob is ours, so the cells are put where the tape is about to
+             * be: otherwise Loop Pitch would go on reading a speed the cleared
+             * loop does not play at, which is the same disagreement between
+             * sound and screen this pair of knobs was just fixed for. */
+            inst->saved.looper_pitch   = 1.f;
+            inst->saved.looper_scrub   = 0.f;
+            snprintf(inst->saved.looper_reverse, sizeof(inst->saved.looper_reverse), "%s",
+                     "Off");
+        }
     }
     else if(strcmp(key, "fx_pre_loop") == 0)
     {
@@ -776,12 +876,20 @@ static const char* kChainParams
       "{\"key\":\"end\",\"name\":\"End\",\"short_name\":\"END\",\"type\":\"wav_position\",\"mode\":\"end\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
       "{\"key\":\"gain\",\"name\":\"Gain\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.704},"
       "{\"key\":\"pan\",\"name\":\"Pan\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.5},"
-      "{\"key\":\"looper_record\",\"name\":\"Loop Rec\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"],\"default\":0},"
+      "{\"key\":\"looper_record\",\"name\":\"Loop Rec\",\"short_name\":\"Rec\",\"type\":\"enum\",\"options\":[\"lorec\",\"rec\"],\"default\":0},"
       "{\"key\":\"looper_play\",\"name\":\"Loop Play\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"],\"default\":0},"
       "{\"key\":\"looper_reverse\",\"name\":\"Loop Rev\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":0},"
       "{\"key\":\"looper_pitch\",\"name\":\"Loop Pitch\",\"type\":\"float\",\"min\":-2,\"max\":2,\"step\":0.01,\"default\":1},"
       "{\"key\":\"looper_scrub\",\"name\":\"Scrub\",\"type\":\"float\",\"min\":-2,\"max\":2,\"step\":0.01,\"default\":0},"
       "{\"key\":\"looper_dub_gain\",\"name\":\"Dub Gain\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
+      /* PORT PATCH P26: the tape's window. "Loop Start"/"Loop End" is the
+       * host's own vocabulary for a bound -- its markerKind classifies a cell
+       * as loopStart/loopEnd by "loop" plus an end word in the KEY OR NAME,
+       * and that is what draws a bound as a bracket instead of as the
+       * playback cursor. short_name keeps the cell label inside the
+       * 5-character budget a cell actually has. */
+      "{\"key\":\"looper_start\",\"name\":\"Loop Start\",\"short_name\":\"Strt\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0},"
+      "{\"key\":\"looper_end\",\"name\":\"Loop End\",\"short_name\":\"End\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
       "{\"key\":\"sample_file\",\"name\":\"Sample\",\"short_name\":\"SMPL\",\"type\":\"filepath\",\"root\":\"/data/UserData/chompi-samples\",\"start_path\":\"/data/UserData/chompi-samples\",\"filter\":[\".wav\",\".aif\",\".aiff\"],\"live_preview\":true},"
       "{\"key\":\"sample_clear\",\"name\":\"Clear\",\"short_name\":\"CLR\",\"type\":\"enum\",\"options\":[\"-\",\"Clear\"],\"default\":0},"
       "{\"key\":\"record\",\"name\":\"Chompi Rec\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":0},"
@@ -815,13 +923,25 @@ static const char* kUiHierarchy
       "{\"key\":\"end\"},"
       "{\"key\":\"gain\"},"
       "{\"key\":\"pan\"}],\"knobs\":[\"reverse\",\"sustain\",\"attack\",\"decay\",\"start\",\"end\",\"gain\",\"pan\"]},"
+      /* The Looper page's seven knobs, in the order the encoders sit under the
+       * screen: rec, play, Loop Pitch, Dub Gain, the window's two bounds, and
+       * Clear -- which is back on a knob now that the window has taken over the
+       * job the Scrub knob was there for.
+       *
+       * `looper_reverse` and `looper_scrub` are still SERVED in chain_params but
+       * no longer DRAWN: a negative Loop Pitch is how the tape turns around (the
+       * reverse cell follows the pitch sign inside the module), and the playhead
+       * was retired in favour of the bounds. Kept rather than deleted so an
+       * existing Set's state still round-trips, and a host that still writes
+       * those keys is understood rather than ignored -- the host plans knobs
+       * from this hierarchy alone, so an undrawn key takes no cell. */
       "\"looper\":{\"label\":\"Looper\",\"params\":[{\"key\":\"looper_record\"},"
       "{\"key\":\"looper_play\"},"
-      "{\"key\":\"looper_reverse\"},"
       "{\"key\":\"looper_pitch\"},"
-      "{\"key\":\"looper_scrub\"},"
       "{\"key\":\"looper_dub_gain\"},"
-      "{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\"]},"
+      "{\"key\":\"looper_start\"},"
+      "{\"key\":\"looper_end\"},"
+      "{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_pitch\",\"looper_dub_gain\",\"looper_start\",\"looper_end\",\"loop_clear\"]},"
       "\"recorder\":{\"label\":\"Recorder\",\"params\":[{\"key\":\"record\"},"
       "{\"key\":\"input_monitor\"},"
       "{\"key\":\"input_gain\"},"
@@ -921,7 +1041,9 @@ static void* v2_create_instance(const char* module_dir, const char* json_default
     inst->engine.SetFinalComp(inst->saved.final_comp);
     inst->engine.SetInputGain(inst->saved.input_gain);
     inst->engine.SetLooperPitch(inst->saved.looper_pitch);
-    inst->engine.SetLooperScrub(0.f);
+    /* PORT PATCH P25: the loop's playhead starts at the top of the tape; the
+     * scrub knob's value is that position, read back from here on. */
+    inst->saved.looper_scrub = inst->engine.GetLooperPosition();
 
     /* The per-slot values (pitch, start/end, attack/decay, loop, sustain, gain,
      * pan) are read from the store on every selection change and every key
@@ -1205,19 +1327,55 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%s", loop ? "On" : "Off");
     }
 
-    /* Looper page. */
+    /* Looper page. Pitch, reverse and scrub answer the KNOB's position
+     * (Saved), which every one of their writes now stores -- the host reads
+     * this back on release and paints it, so a value that only reached the
+     * engine left the knob showing its startup reading while the loop played
+     * at the one the user turned to. The engine's own values are not the cell's
+     * value: its reverse flag follows the tape's slew (and does not move at all
+     * while the transport is stopped), and a clear lands the tape at 1.00x
+     * forward, which is why the clear path moves these saved values with it. */
     if(strcmp(key, "looper_reverse") == 0)
         return snprintf(buf, buf_len, "%s", inst->saved.looper_reverse);
     if(strcmp(key, "looper_pitch") == 0)
         return snprintf(buf, buf_len, "%.4f", inst->saved.looper_pitch);
     if(strcmp(key, "looper_scrub") == 0)
-        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_scrub);
+    {
+        /* PORT PATCH P25: WHERE THE HEAD IS (0..1 of the loop, 0 when nothing
+         * is recorded). Reading stores it, so the next turn -- which the host
+         * computes as (this value + the turn) -- is measured from the head the
+         * user is actually looking at, and a moving transfer does not fight the
+         * knob. */
+        const float head = inst->engine.GetLooperPosition();
+        inst->saved.looper_scrub = head;
+        return snprintf(buf, buf_len, "%.4f", head);
+    }
+    if(strcmp(key, "looper_start") == 0)
+        /* PORT PATCH P26: the two ends of the window the loop turns over in,
+         * as fractions of the take. Numbers, not text: a float cell takes its
+         * dial position from this, and a label here parks the pointer at
+         * zero. A crossed pair reads back as written -- the engine puts the
+         * two in order at its own use, so the screen keeps showing what the
+         * user set, which is also how the reference module does it. */
+        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_start);
+    if(strcmp(key, "looper_end") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->saved.looper_end);
     if(strcmp(key, "looper_dub_gain") == 0)
+        /* Dub gain is the exception: its knob is the gain the engine is
+         * actually applying, and IncrementLooperDubGain's slew is visible in
+         * the audio, so the engine is the honest reading here. */
         return snprintf(buf, buf_len, "%.4f", inst->engine.GetLooperDubGain());
+    if(strcmp(key, "looper_record") == 0)
+        /* The cell IS the live record state: "rec" while a pass is running,
+         * "lorec" when the looper is idle. This is why the param is a stateful
+         * enum and not a momentary -- a trigger has no read-back, so its cell
+         * could only ever say the one word it was declared with. */
+        return snprintf(buf, buf_len, "%s",
+                        inst->engine.IsLooperRecording() ? "rec" : "lorec");
     /* Momentary actions have no state to report, and the idle option is the
      * honest answer: the host then reads "not triggered" and writes the other
      * option when the user picks it. */
-    if(strcmp(key, "looper_record") == 0 || strcmp(key, "looper_play") == 0
+    if(strcmp(key, "looper_play") == 0
        || strcmp(key, "sample_clear") == 0 || strcmp(key, "loop_clear") == 0)
         return snprintf(buf, buf_len, "%s", "-");
 
@@ -1326,6 +1484,15 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%d", inst->engine.IsLooperRecording() ? 1 : 0);
     if(strcmp(key, "looper_playing") == 0)
         return snprintf(buf, buf_len, "%d", inst->engine.IsLooperPlaying() ? 1 : 0);
+    if(strcmp(key, "looper_position") == 0)
+        /* Diagnostic: where the tape's read head is, 0..1 of the loop. The
+         * scrub knob moves this and nothing else does while the transport is
+         * stopped, so it is how tools/looper_probe tells a turn that reached
+         * the engine from a write that only changed the read-back. The engine
+         * divides by the buffer size, which is 0 with nothing recorded. */
+        return snprintf(buf, buf_len, "%.4f",
+                        inst->engine.GetLooperIsEmpty() ? 0.f
+                                                        : inst->engine.GetLooperPosition());
     if(strcmp(key, "debug_files") == 0)
     {
         /* Small bounded diagnostic: 15 flags for slots 1..15 in the current

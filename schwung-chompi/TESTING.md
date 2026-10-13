@@ -92,6 +92,16 @@ bundled few. To stage the set locally instead (for the offline probes):
 make samples-full          # copies cubbi_* + jammi_* into samples/ (~161 MB)
 ```
 
+**Every card sample has a `_double` beside it** — the same audio at twice the
+speed (half the frames, an octave up), which the reader switches to above 1.5×
+so the top of a slot's octave is not read from a thinned-out copy. The three
+bundled files have none, and the module must be fully playable without them:
+above 1.5× a pad then plays the one copy it has, at the right pitch, with the
+aliasing the double exists to avoid. Both states are covered offline
+(`tools/keybed_octave_probe` passes on a tree with no companions, with a real
+companion, and with a 0-byte one) and worth one listen each on the device —
+see step 3.1 and the P23 row in "What a failure looks like".
+
 ---
 
 ## 1. On-device ABI probe (no UI, no chain host)
@@ -115,12 +125,33 @@ ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./serve_params
 (The `Permanently added 'move.local' … to the list of known hosts` line is
 just SSH accepting the host key the first time — harmless.)
 
+**Then the pages themselves** — the one probe that answers "does the host have
+anything to draw at all":
+
+```sh
+ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./hierarchy_probe ./dsp.so .'
+```
+
+It must end `VERDICT: PASS (0 failures)`. It parses `ui_hierarchy` and
+`chain_params` the way the host does, and checks that every page names a param
+the module serves and links to a level that exists. Run it on the device for
+the reason it exists: a stray quote in one level's param list once left the
+Move showing a single preset page reading "no presets" and none of the module's
+pages, while every other probe passed — they all ask for params by key, and
+none of them ever asked for the pages.
+
+One practical note: give each probe its own working directory. Several of them
+read and write the state the module keeps beside it (`samples.map`,
+`looper.wav`), so a shared directory makes them fail against each other's
+leftovers — `sample_format_probe` reported the card file missing that way, and
+`env_probe` wants a directory it is allowed to clear.
+
 Expect four sections. The important ones:
 
 | key | expected |
 | --- | --- |
-| `chain_params` | 2815 bytes, 35 `{…}` entries, *starts with `[` and ends with `]`* |
-| `ui_hierarchy` | 1934 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
+| `chain_params` | 3458 bytes, 34 `{…}` entries, *starts with `[` and ends with `]`* |
+| `ui_hierarchy` | 1760 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
 | `split_voices` | empty (`(none)`) — that is the correct answer, not a failure |
 | `state` | 16-key flat JSON |
 
@@ -199,19 +230,62 @@ In order, each step isolates one subsystem:
    sample at its own speed. The three pads a piano leaves empty (above C,
    above F, and above the octave C) are not silent: each plays the white key
    below it, one octave higher. `octave` transposes the whole keyboard.
+   Then the **top of the keybed**, where the sample is read above 1.5×: sweeps
+   of the top two rows and the top-gap pad must all *sound* (with a companion
+   file they are clean, without one they are a little aliased), and playing
+   them must not leave a 0-byte `_double` file behind. On the device:
+   `ssh ableton@move.local "ls -la …/chompi/samples/ | grep double"` before and
+   after — nothing may appear, and nothing already there may grow. Sliding
+   `slot` or `bank` across while pressing any key must keep the keybed alive
+   (P23's wedge was exactly this: silence that only a reload fixed).
 2. **Streaming under a load spike**: hold several keys in a row and listen for
    dropouts. This is the untested bit — on real hardware the reads contend
    with whatever else touches the filesystem. If you hear clicks, the fix is
    RAM (raise `CHOMPI_RAM_BUFFER_SAMPLES`) or longer refills, and I'd want the
    `debug_files` reading at the moment it happens.
 3. **Tape/loop behaviour**: `varspeed`, `reverse`, `start`/`end`, `auto_loop`.
-4. **Looper**: `looper_record` → play → `looper_play`, then `looper_pitch` and
-   `looper_scrub`. Writes `looper.wav` and `temp_rec.wav` next to the samples —
-   check the directory is writable (`ls -la` after a few seconds of recording;
+4. **Looper**, seven knobs on the page: `REC` (`looper_record`), `LOPLAY`
+   (`looper_play`), `LOOPIT` (Loop Pitch), `DUGAIN` (Dub Gain), the window's
+   `STRT`/`END`, and `CLLOOP` (Clear Loop). `looper_reverse` and
+   `looper_scrub` are still served as KEYS and still work, but no page draws
+   them — the window took over the job Scrub was on the page for, Loop Pitch
+   turns the tape around by its sign, and the two freed slots went to the
+   window's bounds and to Clear.
+   Writes `looper.wav` and `temp_rec.wav` next to the samples — check the
+   directory is writable (`ls -la` after a few seconds of recording;
    a 0-byte `looper.wav` means the write path failed).
    Then **clear it**: the Looper page's `Clear Loop` cell. It is a tape stop —
    the loop winds down over about a second and then stays silent; recording
    again afterwards must make a fresh loop (not a dub of the cleared one).
+   **Overdub**: record a loop, play it back, then record again — the second
+   pass layers onto the old loop instead of replacing it (`Dub Gain` at 1), and
+   the record cell reads `rec` while the pass runs and `lorec` afterwards.
+   Turn `Dub Gain` to 0 before a pass and the pass *replaces* the old loop
+   instead of layering; at 0.5 the old loop comes back at half its level. That
+   law is hardware-shared (the sampler's write loop) and measured offline by
+   `tools/looper_probe`, so anything else on the device is worth reporting.
+   **The knobs must stick**: turn `Loop Pitch` to 2 and let go — the cell keeps
+   reading 2.0000 (it used to snap home while the loop stayed transposed), and
+   the tape is audibly twice as fast. Turning it *below* zero is how the tape
+   turns around now that no `Loop Rev` cell is drawn: the module flips its own
+   reverse state to match the sign, and flips it back above zero. A `Clear Loop`
+   leaves the knobs where the tape lands: pitch 1.0000, reverse `Off`.
+   **The playhead is off the page** (it survives as the `looper_scrub` key):
+   with the bounds on the page, moving the head by hand is not how anyone gets
+   to a part of a take. The odd-sample freeze that key could once cause stays
+   fixed in the engine — the window test asks about the stereo *pair* the next
+   read would take, and a move lands on an even sample — and `tools/looper_probe`
+   still checks it offline, so there is nothing to listen for by hand here.
+   **The window**: the Looper page's last two knobs, `Strt` and `End`. `Strt`
+   up starts the loop later in the take, `End` down stops it earlier, and the
+   pass gets shorter by exactly that much — half the take loops about twice as
+   often, which is the whole feature in one listen. Both cells keep reading
+   back the number they were set to, `End` below `Strt` included; that crossed
+   pair is the span between the bounds played forwards for now — running it
+   backwards through the span is the next piece of this work, not a fault.
+   `tools/looper_probe` measures the pass in laps (whole 2, half 4) and checks
+   the window's edges offline; what it cannot do is feel a knob or read the
+   cells off the screen.
 5. **One sample** (Samples page): pick a file. Every pad plays that file,
    pitched by the piano map above. There is no slot, bank or mode knob — a
    second file is not on the keybed until you pick it. On load, every knob
@@ -230,6 +304,11 @@ In order, each step isolates one subsystem:
 9. **The ugly cases**: pull the sample files out from under it, load a set with
    a missing bank, switch `voice_mode` mid-note. It should stay silent and
    stable, not reboot the chain.
+   A companion file is part of this: truncate one (`: > samples/cubbi_a1_double.wav`)
+   and play the pad above 1.5× that uses it — the pad plays the base sample, and
+   the keybed keeps working. Delete it and the same. The reader treats a
+   companion that is missing, empty or un-openable as absent; it must never
+   swap onto one.
 
 ---
 
@@ -318,8 +397,10 @@ and it will be silent rather than noisy, and `debug_view` will name it.
 | `cd: /data/UserData/…/chompi-probe: No such file or directory` | `make probe` did not run (it creates that directory) — fix step 0 first |
 | Module missing from the list, nothing in the log | wrong directory/`id`/filename — must be `<id>/dsp.so` |
 | Loads, but no knobs / no pad layout | `serve_params` on the device (level 1): `chain_params`, `ui_hierarchy` |
+| **No pages at all after a deploy** — one preset page reading "no presets" | the hierarchy JSON did not parse, and the host throws the whole document away rather than drawing half of it. `./hierarchy_probe ./dsp.so .` in the probe directory names the document and prints `VERDICT: FAIL`; a stray quote in one level's param list did exactly this |
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
 | Sound went away and never came back | ask for `debug_voice`: a voice with `p1` and `op1` is one whose open failed and stuck. Deleted/renamed sample files do this; P12/P13 in `VENDORED.md` are the fix |
+| Silent after playing the *top* of the keybed (or after sweeping `slot`/`bank`), fine again after a reload | a `_double` companion that is not there was opened as a 0-byte placeholder and streamed forever — P23 in `VENDORED.md`. Check `ls -la …/chompi/samples/ \| grep double` for a 0-byte file; the fixed reader ignores it and plays the base sample (rebuild/redeploy if you are on an older `.so`) |
 | One key is silent, its neighbours play | that slot's file is gone or unreadable — the assignment still points at it, so clear it (`CLR`) or reassign |
 | Only the first key or two make sound, the rest of the Samples page is silent | the device is still on the three bundled WAVs — `make deploy-full` (this is the classic one; step 0 has the whole story) |
 | In JAMMI, `slot`/`bank` seem to do nothing | they bind on the **next key press** by design (VENDORED P14/P17), and slot 15 is the RAM buffer, not a file — press a key after turning the knob, and check `debug_voice`'s summary line (`mode=… bank=… sel=…`) |

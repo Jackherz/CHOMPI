@@ -45,6 +45,12 @@ namespace daisy
 
         void Process(float* out_l, float* out_r, size_t size)
         {
+            /* PORT PATCH P26: derive the tape's window from its two fractions
+             * once a block -- cheap, and it means a take being recorded or a
+             * turned knob is picked up without every sample doing the
+             * arithmetic. */
+            looper.PerBlock();
+
             if(IsFirstRecording() && !IsRecording() && !looper.IsResetting())
                 return;
 
@@ -145,6 +151,13 @@ namespace daisy
         inline void SetReverse(bool rev) { looper.SetReverse(rev); }
         inline void SetScrub(float scrub) { looper.SetScrub(scrub); }
         inline float GetScrub() { return looper.GetScrub(); }
+        /* PORT PATCH P26: the tape's window -- the two fractions of the take
+         * the loop turns over between. Stored as written (see FileSampler),
+         * so a crossed pair is a span, not a snap-back. */
+        inline void SetWindowStart(float val) { looper.SetWindowStart(val); }
+        inline void SetWindowEnd(float val) { looper.SetWindowEnd(val); }
+        inline float GetWindowStart() { return looper.GetWindowStart(); }
+        inline float GetWindowEnd() { return looper.GetWindowEnd(); }
         inline bool GetReverse() { return looper.GetReverse(); }
 
         void RecordButton(bool rising)
@@ -233,11 +246,43 @@ namespace daisy
 
         inline bool GetRecordArm() { return record_arm; }
         inline bool GetIsEmpty() { return !record && first_record; }
+
+        /** PORT PATCH P24: is a record pass RUNNING or ASKED FOR?
+         *
+         *  `record` is set by CheckRecordReady() on the audio thread, one block
+         *  after ToggleRecord() requests it, and the port's record cell is a
+         *  stateful control: the host writes the state it wants, reads the
+         *  state back, and can write the same value again inside that window
+         *  (a commit, a repaint of the value it just read). Comparing against
+         *  `record` alone made that second write toggle again and stop the take
+         *  the user had just started. The INTENT is what a request has to be
+         *  measured against, and this is the only place that knows both. */
+        inline bool WantsRecord() { return record || record_target; }
         
         float GetPosition() { 
             float tell = static_cast<float>(looper.GetReadTell());
             float size = static_cast<float>(looper.GetReadSize());
+            /* PORT PATCH P25: an empty loop has no position; 0/0 is NaN, and
+             * NaN reaches whatever asked -- the port's Scrub cell reads this,
+             * and so does the hardware's LED maths. Nothing recorded reads as
+             * the start of the tape. */
+            if(size <= 0.f)
+                return 0.f;
             return tell / size;
+        }
+
+        /** PORT PATCH P25: move the loop's playhead by `loops` of the loop.
+         *
+         *  The fraction is what the port's Scrub knob was turned by (one unit
+         *  of the knob is one pass of the loop), and the head wraps, because a
+         *  loop is a circle. `FileSampler::MoveReadHead` is the mover; this
+         *  only converts the port's units into samples. */
+        void MoveHead(float loops)
+        {
+            const float size = static_cast<float>(looper.GetReadSize());
+            if(size < 2.f)
+                return; /* nothing recorded: there is no head to move */
+            looper.MoveReadHead(static_cast<int32_t>(loops * size));
         }
 
         float GetPitch()

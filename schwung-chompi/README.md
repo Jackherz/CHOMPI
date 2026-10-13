@@ -5,7 +5,7 @@ CHOMPI's TAPE firmware (the tape-music sampler / rolling looper from the
 sound generator** for the Ableton Move.
 
 `schwung-chompi/` is additive: it does not modify anything under
-`firmware/` — CHOMPI's DSP is vendored in and patched in place (six small
+`firmware/` — CHOMPI's DSP is vendored in and patched in place (24 surgical
 patches, see [VENDORED.md](VENDORED.md)).
 
 ```
@@ -110,10 +110,11 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | 15 keys (C3–C5) | the 32 pads, as a piano. One sample, every pad (see below) |
 | velocity-sensitive key press | note-on velocity → key request |
 | 8 knobs | `chain_params` — the on-screen controls, paged by the shadow UI |
-| pitch/speed fader | `varspeed`, `looper_pitch`, `looper_scrub` |
+| pitch/speed fader | `varspeed`, `looper_pitch` / `looper_reverse` (one number: the loop's speed, with a negative value playing it backwards, so the two cells follow each other), and `looper_scrub` — the wheel that nudges the tape while the looper is stopped (`looper_scrub` is the knob's POSITION; the engine gets the turn, VENDORED P24). All of them read back the number they were set to — the host repaints `get_param` when a knob is released — and a `Clear Loop` returns them to 1.00x, forward, no nudge |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
-| rec / play buttons | `looper_record`, `looper_play`, `record` |
+| rec / play buttons | `looper_record` (the cell reads `rec` while a pass runs, `lorec` when idle), `looper_play`, `record` |
+| overdub gain (the two keys beside play, +-0.1 each) | `looper_dub_gain` — the Looper page's `Dub Gain`, 0…1. Each overdub pass rewrites the loop as `old × gain + input`, so 1 layers the new take over the old loop (0.94× measured), 0.5 halves it (0.25×), and 0 replaces it outright. The change is slewed (~0.2 s) and a pass that finishes before the slew has arrived keeps more of the old loop — the engine's own behaviour, and the same on the hardware |
 | clear the loop (rec+play held) | `loop_clear` — the Looper page's `Clear Loop`, a momentary cell |
 | FX before or after the looper | `fx_pre_loop` — the Setup page's `FX Route`: `pre` / `post` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |
@@ -247,11 +248,20 @@ it.
 **Pitch comes from the key, not from a companion file.** Above 1.5× the engine
 wants a `<name>_double.wav` next to the sample — the card ships one for every
 file, the same audio at twice the speed (half the frames, an octave up) so the
-sample's own high notes can be read from a copy that is not thinned out; a user's assignment has none, and the reader used to claim double speed
-anyway and play it an OCTAVE LOW (measured 321 Hz where 642 was due). PORT PATCH
-P22 clears that claim for assigned slots, so the top of a slot's octave plays at
-the right pitch with the one copy it has (at the cost of the aliasing the double
-exists to avoid).
+sample's own high notes can be read from a copy that is not thinned out. A user's
+assignment has none, and the reader used to claim double speed anyway and play it
+an OCTAVE LOW (measured 321 Hz where 642 was due); PORT PATCH P22 stopped that
+claim for assigned slots. But an assigned sample's "companion" is the sample
+itself — the port returns the same path for both names — and the three files
+this repo ships have no `_double` at all, so the same claim was wrong a second
+way: the port's open creates a 0-byte placeholder instead of failing, the reader
+swapped onto it, and a burst of high pads or a slot-knob sweep ended in
+permanent silence. PORT PATCH P23 answers the question at the reader, when the
+open would really use the companion: it must be a *different* file that the disk
+says has samples in it, a companion that lands empty (or will not open) is
+dropped and the voice plays the file it has, and the top of a slot's octave plays
+at the right pitch with the one copy — at the cost of the aliasing the double
+exists to avoid.
 
 Slot 15 is CHOMPI's built-in RAM buffer — out of the box that is a decaying test
 tone, which is what a fresh module used to play regardless of the knobs. To hear
@@ -281,8 +291,8 @@ host hands the module the job of not leaving threads behind.
 
 So `destroy_instance`:
 
-* sets the instance's worker is out of
-  that instance** (`worker_busy`) before freeing anything. That wait used to be
+* **waits until the instance's worker is out of that instance**
+  (`worker_busy`) before freeing anything. That wait used to be
   a fixed 2 ms sleep — a guess about how long a file operation takes, and wrong
   on a device with a slow card, where the worker stayed inside memory that had
   just been freed;
@@ -314,12 +324,14 @@ make host && make tools
 # The behavioural probes. Each builds in a second and prints its own verdict.
 #   sample_map_probe  assign a WAV, reload the plugin, check what plays
 #   slot_knob_probe   the slot knob, fast playing, and a vanished file must
-#                     none of them wedge the voices (see VENDORED P12/P13)
+#                     none of them wedge the voices (see VENDORED P12/P13/P23)
 #   unload_probe      load / play / destroy / dlclose -- the host's own removal
 #                     sequence, which must not crash the host
 #   mode_bank_probe   which sample each mode/bank/slot plays, measured as a
 #                     frequency because every probe sample is a tone
-#   looper_probe      record, play and clear a loop; and where the FX sit
+#   looper_probe      record, play and clear a loop; the dub gain's per-pass
+#                     law (1 keeps, 0.5 halves, 0 erases); the record cell's
+#                     live state; and where the FX sit
 #   keybed_octave_probe  one slot = one octave of the pads: every pad's
 #                     slot and pitch, the octave knob, and the >1.5x case
 for p in sample_map_probe slot_knob_probe unload_probe mode_bank_probe looper_probe \
@@ -341,9 +353,12 @@ mkdir -p /tmp/kboct/samples && cp build/chompi_move.so /tmp/kboct/
 host does, plays a note per block group and writes a WAV. Three scenarios:
 `ram` (CHOMPI's built-in RAM buffer — it pins `slot` 15, which is where that
 lives), `cubbi` (streams `samples/cubbi_a1.wav` off disk), `record` (line-in
-capture into the looper). Peaks at this revision ≈ 1748 / 3176 / 3206; the
-figures move a little with the FX defaults and the sample set, so treat them as
-"not silent, in the same range" rather than exact. Silence means a regression,
+capture into the looper). With the three files this repo ships, peaks
+at this revision are ≈ 1466 / 1007 / 3229 (`ram` / `cubbi` / `record`); they
+move with the FX defaults and the sample set — the tone-labelled set
+`tools/make_probe_samples.py` writes is hot enough to reach ~3200 in the cubbi
+scenario too — so treat them as "not silent, in the same range" rather than
+exact. Silence means a regression,
 and `make render` is the smoke test.
 
 ## Status
@@ -388,6 +403,4 @@ the state round-trip came back byte-identical.
 
 CHOMPI's firmware and samples are MIT (© 2026 CHOMPI Club, see the root
 `LICENSE`). The vendored DSP keeps that licence; the adapter is under the
-same terms.
-e; the adapter is under the
 same terms.

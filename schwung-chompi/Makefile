@@ -64,7 +64,7 @@ ifeq ($(ZIG),1)
 CROSS    := $(ZIG_BIN) c++ -target aarch64-linux-gnu.$(GLIBC)
 endif
 
-.PHONY: all host render aarch64 module tools tools-aarch64 check deploy probe logs logs-off samples-full clean
+.PHONY: all host render aarch64 module tools tools-aarch64 check check-hierarchy deploy probe logs logs-off samples-full clean
 
 all: host
 
@@ -74,7 +74,7 @@ $(HOST_OUT): $(PORT_SRC) $(wildcard $(DSP_DIR)/engine/*.h) $(wildcard $(DSP_DIR)
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ $(PORT_SRC) $(LDFLAGS)
 
-render: $(HOST_OUT)
+render: $(HOST_OUT) $(BUILD)/render_test
 	@mkdir -p $(BUILD)/render
 	./$(BUILD)/render_test $(HOST_OUT) $(BUILD)/render/chompi_ram.wav ram samples 6
 	./$(BUILD)/render_test $(HOST_OUT) $(BUILD)/render/chompi_cubbi.wav cubbi samples 6
@@ -102,7 +102,8 @@ TOOL_SRC  := tools/serve_params.cpp tools/state_roundtrip.cpp tools/key_probe.cp
              tools/param_readback_probe.cpp tools/sample_format_probe.cpp \
              tools/keybed_octave_probe.cpp tools/sample_map_probe.cpp \
              tools/slot_knob_probe.cpp tools/mode_bank_probe.cpp \
-             tools/looper_probe.cpp tools/env_probe.cpp tools/unload_probe.cpp
+             tools/looper_probe.cpp tools/env_probe.cpp tools/unload_probe.cpp \
+             tools/hierarchy_probe.cpp
 TOOLS     := $(patsubst tools/%.cpp,$(BUILD)/%,$(TOOL_SRC))
 TOOLS_A64 := $(patsubst tools/%.cpp,$(BUILD)/aarch64/%,$(TOOL_SRC))
 
@@ -219,6 +220,14 @@ logs-off:
 check: module tools-aarch64
 	python3 tools/check_abi.py build/module/dsp.so --module
 	@for p in $(TOOLS_A64); do python3 tools/check_abi.py $$p; done
+
+# The pages the host draws are JSON, and nothing else here parses them. A stray
+# quote in one level's param list left the device showing no module pages at
+# all -- just a preset page reading "no presets" -- while every key-based probe
+# passed (tools/hierarchy_probe.cpp has the whole story). Host build only: it
+# needs no device and no cross toolchain, so it stays out of `check`.
+check-hierarchy: host tools
+	@./$(BUILD)/hierarchy_probe ./$(HOST_OUT) $(BUILD)
 
 clean:
 	rm -rf $(BUILD)

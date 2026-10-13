@@ -4,22 +4,25 @@
  *   ./sample_map_probe [so] [module_dir] [tone_path]
  *
  * The sample map (`set_param("sample_file", <path>)`) is the feature this
- * checks, end to end:
+ * checks, end to end. The instrument plays ONE sample (PORT PATCH P22,
+ * simplified), so every phase uses the one slot it lives on:
  *
- *   1. render slot 1 as shipped            -> the stock CUBBI sample
- *   2. assign a 1 kHz test tone to slot 1  -> the tone must now play
- *   3. clear the assignment                -> back to the CUBBI sample
+ *   1. render the shipped sample          -> the card's own file
+ *   2. assign a 1 kHz test tone           -> the tone must now play
+ *   3. clear the assignment               -> back to the shipped sample
+ *   4. a sample from the user library, reached through the portal, plays
  *
  * "Which file played" is measured, not assumed: the probe reports the energy
- * at 1 kHz relative to the block's RMS (a Goertzel filter). A pure tone puts
- * nearly all of its energy in that one bin; a music loop puts a little. The
- * three phases have to disagree for the test to pass — a probe that only ever
- * saw the tone (or never did) tells us nothing.
+ * in the loudest bin relative to the block's RMS (a Goertzel scan). A pure
+ * tone puts nearly all of its energy in that one bin; a music loop puts a
+ * little. The phases have to disagree for the test to pass — a probe that
+ * only ever saw the tone (or never did) tells us nothing.
  */
 #include <sys/stat.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,9 +98,10 @@ static double goertzel(const double* x, long n, double freq)
     return s1 * s1 + s2 * s2 - coeff * s1 * s2;
 }
 
-/* Pad 68 is the C the selected slot starts on (PORT PATCH P22): one slot is
- * twelve pads, so this note plays the slot the knob shows, at the sample's own
- * speed. MIDI 48 is not a pad and lands several semitones off that C. */
+/* Pad 68 is the bottom-left pad. The keybed is a piano (PORT PATCH P22), so it
+ * sounds the sample a semitone count below its own speed — which is what the
+ * pad does; the probe only cares WHICH FILE plays, and reads that from the
+ * energy in the loudest bin, so the pitch itself is not asserted here. */
 static double phase(const char* label, double seconds, int note = 68)
 {
     uint8_t on[3] = {0x90, (uint8_t)note, 100};
@@ -124,6 +128,17 @@ static double phase(const char* label, double seconds, int note = 68)
     }
 
     const double rms = sqrt(rms_sum / (rms_n ? rms_n : 1));
+
+    /* Whatever was still sounding when this note began (no phase releases its
+     * note) lands in the first few tens of ms and can out-shout the tone being
+     * measured. Skip it: the probe measures the note it pressed, not the tail
+     * of the one before it. */
+    const long skip = (long)(0.1 * MOVE_SAMPLE_RATE);
+    if(skip < n)
+    {
+        memmove(x, x + skip, (size_t)(n - skip) * sizeof x[0]);
+        n -= skip;
+    }
 
     /* Coarse scan, then a 1 Hz refine around the winner. */
     double best_f = 0.0, best_e = 0.0;
@@ -175,6 +190,28 @@ static void wait_for_scan(int ms)
 {
     for(int i = 0; i < ms / 20; i++)
         usleep(20 * 1000);
+}
+
+/* The .wav names in a directory, sorted only by whatever readdir says. Used to
+ * snapshot the module's sample directory around a key press: a press must not
+ * add a file to it (P11). */
+static int list_wavs(const char* dir, char names[][256], int max)
+{
+    DIR* d = opendir(dir);
+    if(!d)
+        return 0;
+    int n = 0;
+    struct dirent* e;
+    while((e = readdir(d)) != NULL && n < max)
+    {
+        const size_t len = strlen(e->d_name);
+        if(len < 4 || strcmp(e->d_name + len - 4, ".wav") != 0)
+            continue;
+        snprintf(names[n], 256, "%s", e->d_name);
+        n++;
+    }
+    closedir(d);
+    return n;
 }
 
 int main(int argc, char** argv)
@@ -278,17 +315,17 @@ int main(int argc, char** argv)
     api->set_param(inst, "sample_file", tone);       /* a real assignment */
     wait_for_scan(1200);
     n = api->get_param(inst, "sample_map", buf, sizeof buf);
-    const bool assigned_slot3 = (strstr(buf, "3=") != NULL);
+    const bool assigned_one = (strstr(buf, "1=") != NULL);
 
     api->set_param(inst, "sample_file", convention); /* the browser's cancel */
     wait_for_scan(1200);
     n = api->get_param(inst, "sample_map", buf, sizeof buf);
-    const bool cancel_clean = (n <= 0) || (strstr(buf, "3=") == NULL);
+    const bool cancel_clean = (n <= 0) || (strstr(buf, "1=") == NULL);
     n = api->get_param(inst, "sample_file", buf, sizeof buf);
     const bool back_to_stock = (n > 0) && strcmp(buf, convention) == 0;
 
     printf("\ncancel: assigned=%d clean=%d restores=%d (convention=%s)\n",
-           assigned_slot3, cancel_clean, back_to_stock, convention);
+           assigned_one, cancel_clean, back_to_stock, convention);
 
     /* The settle window is 500 ms, so an assignment made just before the host
      * unloads the synth would otherwise be dropped: destroy has to flush it.
@@ -314,38 +351,50 @@ int main(int argc, char** argv)
      * slot"), so nothing is opened and no placeholder appears. The port used to
      * open every voice on every press (SetVoiceSlot, removed as P20), which is
      * what created the empty files this probe used to expect. */
+    /* Play the keybed with an assignment whose file is gone. Nothing may be
+     * created: not the user's path, and not a placeholder anywhere beside the
+     * shipped samples. */
     remove("/tmp/chompi_missing_probe.wav");
     api->set_param(inst, "sample_file", "/tmp/chompi_missing_probe.wav");
     wait_for_scan(1200);
 
-    /* Play the two slots. With the knob on 5, pad 68 is slot 5 (assigned, file
-     * gone) and pad 80 is slot 6 (no assignment, no file on this card). Neither
-     * may create anything. */
+    /* The module's own sample directory, before the presses. With one sample
+     * the key path can only ever name the one slot, so the invariant is
+     * simply "a key press adds no file here" — which is also what a run with
+     * the full card set staged (make samples-full) needs to be able to say,
+     * since the slots' convention files all exist by then. */
+    char       managed_dir[512];
+    snprintf(managed_dir, sizeof managed_dir, "%s/samples", dir);
+    char managed_before[64][256];
+    const int n_before = list_wavs(managed_dir, managed_before, 64);
+
     note_press(68, 0.25);
     note_press(80, 0.25);
     wait_for_scan(600);
     struct stat st;
     const bool user_stub = (stat("/tmp/chompi_missing_probe.wav", &st) == 0);
-    char managed[512];
-    snprintf(managed, sizeof managed, "%s/samples/cubbi_a6.wav", dir);
-    const bool managed_stub = (stat(managed, &st) == 0);
-    printf("P11 create-guard: user-path stub=%d (want 0), managed stub=%d (want 0: a key press opens nothing for a slot with no file)\n",
-           user_stub, managed_stub);
-
-    /* This probe walks slots 3-6, so the engine's placeholder behaviour leaves
-     * 0-byte convention files behind in the module's samples/ directory. Remove
-     * the ones it caused (only ever empty files -- a shipped sample is not
-     * touched) so a local run does not leave the working tree dirty. */
-    int cleaned = 0;
-    for(int slot = 3; slot <= 6; slot++)
+    char managed_after[64][256];
+    const int n_after  = list_wavs(managed_dir, managed_after, 64);
+    bool managed_stub = false;
+    for(int i = 0; i < n_after && !managed_stub; i++)
     {
-        char path[512];
-        snprintf(path, sizeof path, "%s/samples/cubbi_a%d.wav", dir, slot);
-        if(stat(path, &st) == 0 && st.st_size == 0 && remove(path) == 0)
-            cleaned++;
+        bool known = false;
+        for(int j = 0; j < n_before && !known; j++)
+            known = (strcmp(managed_after[i], managed_before[j]) == 0);
+        managed_stub = !known;
     }
-    if(cleaned)
-        printf("cleaned %d placeholder file(s) from samples/\n", cleaned);
+    printf("P11 create-guard: user-path stub=%d (want 0), samples/ gained no file=%d (want 1: a key press creates nothing)\n",
+           user_stub, !managed_stub);
+    if(managed_stub)
+        printf("  (a file appeared in %s: %s)\n", managed_dir,
+               n_after > n_before ? managed_after[n_after - 1] : "?");
+
+
+    /* One sample: that missing-file assignment went to the SAME slot the
+     * portal section inspects next, so clear it here. With several slots this
+     * was implicit -- each phase aimed at its own. */
+    api->set_param(inst, "sample_clear", "1");
+    wait_for_scan(1200);
 
     /* --- the portal: where the browser lives (PORT PATCH P18) --------------
      *
@@ -468,7 +517,7 @@ int main(int argc, char** argv)
     const bool ok = assigned > 0.50 && assigned > stock * 3.0
                     && reloaded > 0.50 /* the map persisted */
                     && cleared < 0.25
-                    && assigned_slot3 && cancel_clean && back_to_stock
+                    && assigned_one && cancel_clean && back_to_stock
                     && flushed && !user_stub && !managed_stub
                     && root_reported && builtin_link && userlib_link
                     && presented_builtin && presented_readable
