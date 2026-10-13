@@ -1,0 +1,62 @@
+{
+  "title": "CHOMPI",
+  "children": [
+    {
+      "title": "The keyboard",
+      "lines": [
+        "ONE SAMPLE, every pad. Load a file and the whole keybed plays it,",
+        "higher or lower by which pad you press.",
+        "",
+        "The pads are a piano, not a row of semitones:",
+        "  row 1  C  D  E  F  G  A  B  C",
+        "  row 2  ·  C# D# ·  F# G# A# ·",
+        "  row 3  C  D  E  F  G  A  B  C",
+        "  row 4  ·  C# D# ·  F# G# A# ·",
+        "Black pads are the sharps, one column to the right of the white they",
+        "split, the way a grid has to place a key that sits between two whites.",
+        "",
+        "The three pads a piano leaves empty (above C, above F, and above the",
+        "octave C) are not silent. Each plays the white key below it, one",
+        "octave higher.",
+        "",
+        "The C at the end of row 1, and the C at the start of row 3, play the",
+        "sample at its own speed. The Octave knob moves the whole keyboard",
+        "up or down, one octave a step."
+      ]
+    },
+    {
+      "title": "Loading a sample",
+      "lines": [
+        "Samples page: Sample opens the browser. What you pick replaces the",
+        "sample the keybed is playing. There is only one.",
+        "",
+        "The browser starts at /data/UserData/chompi-samples:",
+        "  Built-in      the module's own wavs (the CHOMPI card set)",
+        "  User Library  your own files, already on the Move",
+        "Copy WAV or AIFF files to User Library however you like; they show",
+        "up in the browser, and any rate, bit depth or channel count plays.",
+        "",
+        "The pick is kept, and survives a reload of the chain. Clear puts",
+        "the keybed back on the built-in sample."
+      ]
+    },
+    {
+      "title": "Tape, looper, recorder",
+      "lines": [
+        "Tape: reverse, sustain, loop, attack, decay, start, end, gain,",
+        "pan. They shape the one sample, and they are remembered.",
+        "",
+        "Looper: records the module's output into a 60 s buffer and plays",
+        "it back with pitch, scrub and dub. Loop Rec starts it, Loop Play",
+        "starts playback, Clear Loop empties it.",
+        "",
+        "Recorder: Chompi Rec records the audio input (Input, In Gain).",
+        "Monitor passes the input through to the output. Move has one",
+        "output, so the line input is in the mix either way.",
+        "",
+        "On load, every knob shows the value the sound is actually at.",
+        "Volume starts at 0.80, not at 0."
+      ]
+    }
+  ]
+}

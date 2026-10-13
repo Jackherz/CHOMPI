@@ -1,0 +1,12 @@
+build/
+
+# Runtime state written next to the samples (slot -> WAV assignments)
+samples/samples.map
+# `make samples-full` stages the whole card set here (~161 MB); the three files
+# the repo ships stay tracked, everything else is a local convenience.
+samples/*.wav
+!samples/cubbi_a1.wav
+!samples/cubbi_a2.wav
+!samples/jammi_a1.wav
+# Render harness output when the binary is run by hand from the module dir
+chompi_render.wav
