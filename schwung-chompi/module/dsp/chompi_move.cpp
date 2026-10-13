@@ -923,13 +923,25 @@ static const char* kUiHierarchy
       "{\"key\":\"end\"},"
       "{\"key\":\"gain\"},"
       "{\"key\":\"pan\"}],\"knobs\":[\"reverse\",\"sustain\",\"attack\",\"decay\",\"start\",\"end\",\"gain\",\"pan\"]},"
+      /* The Looper page's seven knobs, in the order the encoders sit under the
+       * screen: rec, play, Loop Pitch, Dub Gain, the window's two bounds, and
+       * Clear -- which is back on a knob now that the window has taken over the
+       * job the Scrub knob was there for.
+       *
+       * `looper_reverse` and `looper_scrub` are still SERVED in chain_params but
+       * no longer DRAWN: a negative Loop Pitch is how the tape turns around (the
+       * reverse cell follows the pitch sign inside the module), and the playhead
+       * was retired in favour of the bounds. Kept rather than deleted so an
+       * existing Set's state still round-trips, and a host that still writes
+       * those keys is understood rather than ignored -- the host plans knobs
+       * from this hierarchy alone, so an undrawn key takes no cell. */
       "\"looper\":{\"label\":\"Looper\",\"params\":[{\"key\":\"looper_record\"},"
       "{\"key\":\"looper_play\"},"
-      "{\"key\":\"looper_reverse\"},"
       "{\"key\":\"looper_pitch\"},"
-      "{\"key\":\"looper_scrub\"},"
       "{\"key\":\"looper_dub_gain\"},"
-      "{\"key\":\"looper_start\"},{\"key\":\"looper_end\"},{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\",\"looper_start\",\"looper_end\"]},"
+      "{\"key\":\"looper_start\"},"
+      "{\"key\":\"looper_end\"},"
+      "{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_pitch\",\"looper_dub_gain\",\"looper_start\",\"looper_end\",\"loop_clear\"]},"
       "\"recorder\":{\"label\":\"Recorder\",\"params\":[{\"key\":\"record\"},"
       "{\"key\":\"input_monitor\"},"
       "{\"key\":\"input_gain\"},"

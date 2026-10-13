@@ -193,9 +193,19 @@ int main(int argc, char** argv)
      * The external-note presses this used to do (MIDI 48/50/52) are not the
      * device's pads at all - they fall back to a chromatic reading, which is a
      * different (and separately probed) path. */
-    /* One sample (jammi_a1, 840 Hz → 771.75 at 44.1 kHz). Pad 75 is 1.00x.
-     * Mode, bank and slot must not switch the file. */
-    const double one = 840.0 * 44100.0 / 48000.0;
+    /* One sample (jammi_a1, C4 261.63 Hz content → 240.4 through a 44.1 kHz
+     * engine reading a 48 kHz file). Pad 75 is 1.00x. Mode, bank and slot must
+     * not switch the file.
+     *
+     * This reference was 840 Hz because jammi_a1 used to be an 840 Hz tone.
+     * When the card set changed, the module kept playing the file correctly and
+     * this probe went red on five checks -- a constant ratio of 840/261.63 =
+     * 3.21 against every reading, which is the signature of a stale reference
+     * rather than a wrong playback rate (the ratios BETWEEN keys stayed right).
+     * Checked against a build from before the tape window existed: identical
+     * numbers, so it never was a playback fault. If the samples change again,
+     * measure the file first and change the constant here. */
+    const double one = 261.63 * 44100.0 / 48000.0;
     printf("--- one sample on the piano; mode/bank/slot must not switch it ----\n");
     press_note("pad 75, C at 1.00x (jammi_a1)", 75, one);
     press_note("pad 68, that C an octave down", 68, one * 0.5);

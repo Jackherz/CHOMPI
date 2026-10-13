@@ -140,12 +140,18 @@ Move showing a single preset page reading "no presets" and none of the module's
 pages, while every other probe passed — they all ask for params by key, and
 none of them ever asked for the pages.
 
+One practical note: give each probe its own working directory. Several of them
+read and write the state the module keeps beside it (`samples.map`,
+`looper.wav`), so a shared directory makes them fail against each other's
+leftovers — `sample_format_probe` reported the card file missing that way, and
+`env_probe` wants a directory it is allowed to clear.
+
 Expect four sections. The important ones:
 
 | key | expected |
 | --- | --- |
 | `chain_params` | 3458 bytes, 34 `{…}` entries, *starts with `[` and ends with `]`* |
-| `ui_hierarchy` | 1827 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
+| `ui_hierarchy` | 1760 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
 | `split_voices` | empty (`(none)`) — that is the correct answer, not a failure |
 | `state` | 16-key flat JSON |
 
@@ -238,9 +244,15 @@ In order, each step isolates one subsystem:
    RAM (raise `CHOMPI_RAM_BUFFER_SAMPLES`) or longer refills, and I'd want the
    `debug_files` reading at the moment it happens.
 3. **Tape/loop behaviour**: `varspeed`, `reverse`, `start`/`end`, `auto_loop`.
-4. **Looper**: `looper_record` → play → `looper_play`, then `looper_pitch` and
-   `looper_scrub`. Writes `looper.wav` and `temp_rec.wav` next to the samples —
-   check the directory is writable (`ls -la` after a few seconds of recording;
+4. **Looper**, seven knobs on the page: `REC` (`looper_record`), `LOPLAY`
+   (`looper_play`), `LOOPIT` (Loop Pitch), `DUGAIN` (Dub Gain), the window's
+   `STRT`/`END`, and `CLLOOP` (Clear Loop). `looper_reverse` and
+   `looper_scrub` are still served as KEYS and still work, but no page draws
+   them — the window took over the job Scrub was on the page for, Loop Pitch
+   turns the tape around by its sign, and the two freed slots went to the
+   window's bounds and to Clear.
+   Writes `looper.wav` and `temp_rec.wav` next to the samples — check the
+   directory is writable (`ls -la` after a few seconds of recording;
    a 0-byte `looper.wav` means the write path failed).
    Then **clear it**: the Looper page's `Clear Loop` cell. It is a tape stop —
    the loop winds down over about a second and then stays silent; recording
@@ -253,31 +265,27 @@ In order, each step isolates one subsystem:
    law is hardware-shared (the sampler's write loop) and measured offline by
    `tools/looper_probe`, so anything else on the device is worth reporting.
    **The knobs must stick**: turn `Loop Pitch` to 2 and let go — the cell keeps
-   reading 2.0000 (it used to snap home while the loop stayed transposed), the
-   tape is audibly twice as fast, and `Loop Rev` flips to `On` with the pitch
-   cell reading -1.0000. A `Clear Loop` puts all three back where the tape
-   lands: pitch 1.0000, reverse `Off`, scrub 0.0000.
-   **The playhead**: with the loop stopped, a turn of `Scrub` lands the tape
-   where the cell says it is — the cell *is* the head's position, 0 at the
-   take's start and 1 at its end, and a second turn from there moves by the
-   turn rather than to it. Started, the same turn is an instant jump to the
-   new place: a tape playhead, not a speed. Park the head and start the tape:
-   it plays from where the head is, comes round, and wraps. It must never sit
-   silent while the screen still says it is playing — a move landing on an odd
-   sample used to put the head one sample short of the take's end forever, and
-   only a move could land there, so scrub near the end of a take and listen
-   for the wrap.
+   reading 2.0000 (it used to snap home while the loop stayed transposed), and
+   the tape is audibly twice as fast. Turning it *below* zero is how the tape
+   turns around now that no `Loop Rev` cell is drawn: the module flips its own
+   reverse state to match the sign, and flips it back above zero. A `Clear Loop`
+   leaves the knobs where the tape lands: pitch 1.0000, reverse `Off`.
+   **The playhead is off the page** (it survives as the `looper_scrub` key):
+   with the bounds on the page, moving the head by hand is not how anyone gets
+   to a part of a take. The odd-sample freeze that key could once cause stays
+   fixed in the engine — the window test asks about the stereo *pair* the next
+   read would take, and a move lands on an even sample — and `tools/looper_probe`
+   still checks it offline, so there is nothing to listen for by hand here.
    **The window**: the Looper page's last two knobs, `Strt` and `End`. `Strt`
    up starts the loop later in the take, `End` down stops it earlier, and the
    pass gets shorter by exactly that much — half the take loops about twice as
-   often. Park the head outside the window and start the tape: it plays and
-   the window's content comes round, without anything from outside the window.
-   Both cells keep reading back the number they were set to, `End` below
-   `Strt` included; that crossed pair is the span between the bounds played
-   forwards for now — running it backwards through the span is the next piece
-   of this work, not a fault. `tools/looper_probe` measures the pass in laps
-   (whole 2, half 4) and the park-then-play pair offline; what it cannot do is
-   feel a knob or read the cells off the screen.
+   often, which is the whole feature in one listen. Both cells keep reading
+   back the number they were set to, `End` below `Strt` included; that crossed
+   pair is the span between the bounds played forwards for now — running it
+   backwards through the span is the next piece of this work, not a fault.
+   `tools/looper_probe` measures the pass in laps (whole 2, half 4) and checks
+   the window's edges offline; what it cannot do is feel a knob or read the
+   cells off the screen.
 5. **One sample** (Samples page): pick a file. Every pad plays that file,
    pitched by the piano map above. There is no slot, bank or mode knob — a
    second file is not on the keybed until you pick it. On load, every knob
