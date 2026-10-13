@@ -27,6 +27,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -103,13 +104,24 @@ static double render(double seconds, double in_from, double in_to, double from, 
 static double record_loop(double seconds, double in_from, double in_to)
 {
     char buf[64];
-    set("looper_record", "Trig"); /* ToggleRecord() -- arms/starts */
+    set("looper_record", "rec"); /* ToggleRecord() -- starts a pass */
     render(0.05, -1, -1, 0, 0);   /* CheckRecordReady() runs in ProcessAudio */
     get("looper_recording", buf, sizeof buf);
     const bool started = buf[0] == '1';
     render(seconds, in_from, in_to, seconds, seconds); /* measure nothing */
-    set("looper_record", "Trig"); /* stop: first record ends, playback begins */
+    set("looper_record", "lorec"); /* stop: first record ends, playback begins */
     return started ? seconds : 0.0;
+}
+
+/* Where the tape's read head is, 0..1 of the loop (the engine's diagnostic).
+ * The scrub knob's OWN read-back is the knob position, not the tape, so this
+ * is how the probe tells a turn that reached the engine from a write that only
+ * changed the number the cell shows. */
+static double tape_position()
+{
+    char buf[32];
+    get("looper_position", buf, sizeof buf);
+    return atof(buf);
 }
 
 int main(int argc, char** argv)
@@ -235,6 +247,74 @@ int main(int argc, char** argv)
 
     snprintf(buf, sizeof buf, "pre=%.4f post=%.4f", tail_pre, tail_post);
     check("FX-pre leaves the FX tail printed in the loop", tail_pre > 3.0 * tail_post, buf);
+
+    printf("\n--- the record cell, and the scrub knob --------------------------\n");
+    /* A fresh take that is a continuous tone: the read head's position is then
+     * the whole story below, wherever it is parked. */
+    set("loop_clear", "Clear");
+    set("delay_feedback", "0.0");
+    render(1.6, -1, -1, 0, 0); /* the clear winds down */
+
+    set("looper_record", "rec");
+    render(0.05, -1, -1, 0, 0);
+    get("looper_record", buf, sizeof buf);
+    check("the record cell reads rec while the pass runs", strcmp(buf, "rec") == 0, buf);
+
+    /* The host writes the value the cell shows and can write it again before
+     * the engine's own flag has moved (a commit, a repaint of the value it
+     * just read). One press is one toggle: the echo must not stop the take. */
+    set("looper_record", "rec");
+    render(0.05, -1, -1, 0, 0);
+    get("looper_recording", buf, sizeof buf);
+    check("an echo of rec does not toggle the pass off", buf[0] == '1', buf);
+
+    render(1.0, 0.0, 1.0, 0, 0);  /* the take */
+    set("looper_record", "lorec"); /* end it -- playback starts, overdub passes */
+    render(0.15, -1, -1, 0, 0);
+    set("looper_record", "lorec"); /* stop the overdub pass as well */
+    render(0.15, -1, -1, 0, 0);
+    get("looper_record", buf, sizeof buf);
+    check("the record cell is back to lorec once the pass stops",
+          strcmp(buf, "lorec") == 0, buf);
+
+    /* Scrub moves the tape only while the transport is STOPPED, which is the
+     * hardware's own arrangement: on the CHOMPI that encoder is the pitch
+     * control while the looper plays and the scrub wheel when it does not
+     * (NormalPage: IsLooperPlaying() picks between them). */
+    get("looper_playing", buf, sizeof buf);
+    if(buf[0] == '1')
+    {
+        set("looper_play", "Trig"); /* a momentary: the write toggles */
+        render(0.3, -1, -1, 0, 0);
+    }
+    get("looper_playing", buf, sizeof buf);
+    check("the transport is stopped for the scrub checks", buf[0] == '0', buf);
+
+    set("looper_scrub", "0");
+    render(0.3, -1, -1, 0, 0);
+    const double parked  = tape_position();
+    set("looper_scrub", "2"); /* a turn of +2 */
+    render(0.5, -1, -1, 0, 0);
+    const double moved   = tape_position();
+    render(0.3, -1, -1, 0, 0); /* the turn's 1/8 s window expires */
+    const double settled = tape_position();
+    set("looper_scrub", "2"); /* the SAME position: no turn, no further move */
+    render(0.5, -1, -1, 0, 0);
+    const double echoed  = tape_position();
+
+    /* The turn's own move is the yardstick for the echo: the tape keeps
+     * creeping for a moment after a turn (scrub_ slews toward the rate at
+     * 0.0001 a sample), so "did not move at all" would fail on the tail of the
+     * previous turn. What matters is the size -- a write that really sent
+     * +2.0 again moves the head as far as the first one did. */
+    const double turn_move = fabs(moved - parked);
+    const double echo_move = fabs(echoed - settled);
+    snprintf(buf, sizeof buf, "parked=%.4f moved=%.4f settled=%.4f echoed=%.4f",
+             parked, moved, settled, echoed);
+    check("a scrub turn moves the tape", turn_move > 0.005, buf);
+    check("the same position again is not a new turn", echo_move < 0.2 * turn_move, buf);
+    get("looper_scrub", buf, sizeof buf);
+    check("scrub reads back the position it was given", strcmp(buf, "2.0000") == 0, buf);
 
     printf("\n%s (%d failure%s)\n", fails ? "VERDICT: FAIL" : "VERDICT: PASS", fails,
            fails == 1 ? "" : "s");

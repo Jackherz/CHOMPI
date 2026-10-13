@@ -1415,6 +1415,10 @@ namespace daisy
         inline bool IsLooperRecording() { return looper.IsRecording(); };
         inline bool IsLooperFirstRecording() { return looper.IsFirstRecording(); };
         inline bool IsLooperRecordArmed() { return looper.GetRecordArm(); };
+        /* PORT PATCH P24: a record pass running OR requested -- what a write to
+         * the port's record cell has to be compared against (see
+         * LooperEngine::WantsRecord). */
+        inline bool LooperRecordWanted() { return looper.WantsRecord(); }
 
         inline bool GetRecordLatch() { return record_latch; }
 

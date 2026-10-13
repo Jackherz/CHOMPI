@@ -39,6 +39,7 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P21 | `port/sample_view.h/.cpp` + `compat/chompi_platform.cpp` | a file-byte-addressed converter in front of the engine's `f_read`: WAV at any rate/bit depth and AIFF/AIFC in, canonical 16-bit stereo out; the plain RIFF case keeps the raw fast path |
 | P22 | `SampleReader.h`, `DSPEngine.h`, `chompi_port.h/.cpp`, `chompi_move.cpp` | one slot = one octave of the keybed: the pads are a chromatic ladder, a pad's octave picks the slot and its distance from that octave's C sets the pitch, and a sample with no `_double` companion keeps its own pitch above 1.5× (see below) |
 | P23 | `SampleReader.h` | a 2x companion must be a *different*, non-empty file: the reader verifies it on disk at the moment the open would use it, and a companion that lands empty is dropped in favour of the sample (see below) |
+| P24 | `LooperEngine.h`, `DSPEngine.h` | one press is one toggle: the port's record cell is a two-state control, and a write to it is measured against the pass that is RUNNING or still REQUESTED (`WantsRecord()`), so a repeated write cannot stop the take it just started (see below) |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -322,6 +323,42 @@ Measured after the patch: the keybed's octave checks are 1764/882 Hz again,
 `_double` behind, and a burst of pads 88–99 that used to end at `rms=0.0000`
 (five presses later still silent) now ends at 0.0196 with the next press at
 0.0205.
+
+### P24 in detail
+
+One press, one toggle.
+
+The Looper page's record cell is a two-state control -- `rec` while a record pass
+runs, `lorec` when the looper is idle -- rather than the momentary trigger it used
+to be (`options: ["-","Trig"]`, with `get_param` always answering `-`, so the
+cell could never say `rec` no matter what the looper was doing). A stateful cell
+is written as a STATE: the host reads the value back and writes the value it
+shows, and it may write it more than once for a single press (a commit, a repaint
+of the value it just read).
+
+`LooperEngine::record` is set the frame after `ToggleRecord()` asks for a pass
+(`record_target` -> `CheckRecordReady()` on the audio thread), so a second write
+arriving inside that window used to toggle the take straight back off -- the
+recording the user had just started stopped, and an overdub pass with it. The
+port now measures the write against the INTENT, `record || record_target`
+(`LooperEngine::WantsRecord()`), and toggles only when the state asked for is not
+the state the looper is in. The hardware has the same shape: its key is a
+momentary whose `RecordButton()` remembers whether a press has been handled
+(`toggle_record`) until it is, because a button held while `CheckReset()` polls
+must not toggle once per poll.
+
+The scrub encoder's fix lives in the same port: `set_param("looper_scrub")` kept
+the knob's absolute position in `Saved` (so the cell reads it back and the knob
+stops snapping home) and sends only the DIFFERENCE to the engine, whose
+`FileSampler::SetScrub(addl)` accumulates the hardware wheel's turns
+(`turn_count_ += addl`) and turns them into a rate every 1/8 s. Passing the
+absolute position in re-applied the whole value on every detent, so the tape
+crept away instead of following the wheel.
+
+Measured by `tools/looper_probe` on a continuous take (so the read head's
+position is unambiguous): a turn of +2.0 moves the tape 0.4617 -> 0.5157, the
+same position written again moves it 0.0025 (the tail of the first turn's slew),
+and `looper_scrub` reads back `2.0000`.
 
 ## Warnings the compiler still reports (all benign)
 

@@ -5,7 +5,7 @@ CHOMPI's TAPE firmware (the tape-music sampler / rolling looper from the
 sound generator** for the Ableton Move.
 
 `schwung-chompi/` is additive: it does not modify anything under
-`firmware/` — CHOMPI's DSP is vendored in and patched in place (23 surgical
+`firmware/` — CHOMPI's DSP is vendored in and patched in place (24 surgical
 patches, see [VENDORED.md](VENDORED.md)).
 
 ```
@@ -110,10 +110,10 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | 15 keys (C3–C5) | the 32 pads, as a piano. One sample, every pad (see below) |
 | velocity-sensitive key press | note-on velocity → key request |
 | 8 knobs | `chain_params` — the on-screen controls, paged by the shadow UI |
-| pitch/speed fader | `varspeed`, `looper_pitch`, `looper_scrub` |
+| pitch/speed fader | `varspeed`, `looper_pitch`, and `looper_scrub` — the wheel that nudges the tape while the looper is stopped (`looper_scrub` is the knob's POSITION; the engine gets the turn, VENDORED P24) |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
-| rec / play buttons | `looper_record`, `looper_play`, `record` |
+| rec / play buttons | `looper_record` (the cell reads `rec` while a pass runs, `lorec` when idle), `looper_play`, `record` |
 | clear the loop (rec+play held) | `loop_clear` — the Looper page's `Clear Loop`, a momentary cell |
 | FX before or after the looper | `fx_pre_loop` — the Setup page's `FX Route`: `pre` / `post` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |

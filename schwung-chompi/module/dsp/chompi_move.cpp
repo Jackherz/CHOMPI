@@ -393,7 +393,7 @@ static void join_worker_if_idle()
  *  click-free — the same path CHOMPI's UI used. */
 static void apply_state_json(ChompiInstance* inst, const char* json);
 
-/* Momentary enums ("-"/"Clear", "-"/"Trig") are written by the shadow UI as
+/* Momentary enums ("-"/"Clear") are written by the shadow UI as
  * the option NAME when it can read a current value back, and as the INDEX ("1")
  * when it cannot -- which is what happens here, because get_param answers -1
  * for an action that has no state. Accept both; only the idle option is a
@@ -575,7 +575,23 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
         }
     }
     else if(strcmp(key, "looper_record") == 0)
-        e.ToggleLooperRecord();
+    {
+        /* The cell is a two-state read-out -- "lorec" idle, "rec" while a
+         * record pass runs (CHOMPI's vocabulary: the key is the looper's
+         * record key). A write is therefore a request for a STATE, not a
+         * fire-and-forget trigger: act only when the state asked for is not
+         * the state the looper is in. The host writes the value the cell shows
+         * and may write it again before the engine's flag has moved -- a
+         * commit, a repaint of the value it just read -- so a blind
+         * ToggleLooperRecord() on every write toggled twice on one press and
+         * stopped the take it had just started; LooperRecordWanted() counts
+         * the request that is still in flight. Anything that is not "rec"/"1"
+         * is read as the idle state, which is the safe direction: an
+         * unrecognised write can stop a pass, never start one. */
+        const bool want_rec = (strcmp(val, "rec") == 0) || (strcmp(val, "1") == 0);
+        if(want_rec != e.LooperRecordWanted())
+            e.ToggleLooperRecord();
+    }
     else if(strcmp(key, "looper_play") == 0)
         e.ToggleLooperPlaying();
     else if(strcmp(key, "looper_reverse") == 0)
@@ -583,7 +599,20 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
     else if(strcmp(key, "looper_pitch") == 0)
         e.SetLooperPitch(f);
     else if(strcmp(key, "looper_scrub") == 0)
-        e.SetLooperScrub(f);
+    {
+        /* The host writes the knob's absolute position, and the cell reads that
+         * position back -- so Saved keeps the POSITION, which is also what
+         * stops the knob snapping home on release. The engine wants the TURN:
+         * FileSampler::SetScrub adds to the hardware wheel's accumulator
+         * (turn_count_ += addl) and the audio loop turns that into a rate every
+         * 1/8 s (scrub_target_ = turn_count_ * 0.2). Feeding the absolute
+         * position in re-applied the whole value on every detent -- the tape
+         * crept away instead of following the wheel. */
+        const float delta = f - inst->saved.looper_scrub;
+        inst->saved.looper_scrub = f;
+        if(delta != 0.f)
+            e.SetLooperScrub(delta);
+    }
     else if(strcmp(key, "looper_dub_gain") == 0)
     {
         /* The host writes the knob's absolute value. IncrementDubGain adds,
@@ -776,7 +805,7 @@ static const char* kChainParams
       "{\"key\":\"end\",\"name\":\"End\",\"short_name\":\"END\",\"type\":\"wav_position\",\"mode\":\"end\",\"filepath_param\":\"sample_file\",\"display_unit\":\"percent\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":1},"
       "{\"key\":\"gain\",\"name\":\"Gain\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.704},"
       "{\"key\":\"pan\",\"name\":\"Pan\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.5},"
-      "{\"key\":\"looper_record\",\"name\":\"Loop Rec\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"],\"default\":0},"
+      "{\"key\":\"looper_record\",\"name\":\"Loop Rec\",\"short_name\":\"Rec\",\"type\":\"enum\",\"options\":[\"lorec\",\"rec\"],\"default\":0},"
       "{\"key\":\"looper_play\",\"name\":\"Loop Play\",\"type\":\"enum\",\"options\":[\"-\",\"Trig\"],\"default\":0},"
       "{\"key\":\"looper_reverse\",\"name\":\"Loop Rev\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":0},"
       "{\"key\":\"looper_pitch\",\"name\":\"Loop Pitch\",\"type\":\"float\",\"min\":-2,\"max\":2,\"step\":0.01,\"default\":1},"
@@ -1214,10 +1243,17 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%.4f", inst->saved.looper_scrub);
     if(strcmp(key, "looper_dub_gain") == 0)
         return snprintf(buf, buf_len, "%.4f", inst->engine.GetLooperDubGain());
+    if(strcmp(key, "looper_record") == 0)
+        /* The cell IS the live record state: "rec" while a pass is running,
+         * "lorec" when the looper is idle. This is why the param is a stateful
+         * enum and not a momentary -- a trigger has no read-back, so its cell
+         * could only ever say the one word it was declared with. */
+        return snprintf(buf, buf_len, "%s",
+                        inst->engine.IsLooperRecording() ? "rec" : "lorec");
     /* Momentary actions have no state to report, and the idle option is the
      * honest answer: the host then reads "not triggered" and writes the other
      * option when the user picks it. */
-    if(strcmp(key, "looper_record") == 0 || strcmp(key, "looper_play") == 0
+    if(strcmp(key, "looper_play") == 0
        || strcmp(key, "sample_clear") == 0 || strcmp(key, "loop_clear") == 0)
         return snprintf(buf, buf_len, "%s", "-");
 
@@ -1326,6 +1362,15 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%d", inst->engine.IsLooperRecording() ? 1 : 0);
     if(strcmp(key, "looper_playing") == 0)
         return snprintf(buf, buf_len, "%d", inst->engine.IsLooperPlaying() ? 1 : 0);
+    if(strcmp(key, "looper_position") == 0)
+        /* Diagnostic: where the tape's read head is, 0..1 of the loop. The
+         * scrub knob moves this and nothing else does while the transport is
+         * stopped, so it is how tools/looper_probe tells a turn that reached
+         * the engine from a write that only changed the read-back. The engine
+         * divides by the buffer size, which is 0 with nothing recorded. */
+        return snprintf(buf, buf_len, "%.4f",
+                        inst->engine.GetLooperIsEmpty() ? 0.f
+                                                        : inst->engine.GetLooperPosition());
     if(strcmp(key, "debug_files") == 0)
     {
         /* Small bounded diagnostic: 15 flags for slots 1..15 in the current

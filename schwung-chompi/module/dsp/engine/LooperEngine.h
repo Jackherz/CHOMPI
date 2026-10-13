@@ -233,6 +233,18 @@ namespace daisy
 
         inline bool GetRecordArm() { return record_arm; }
         inline bool GetIsEmpty() { return !record && first_record; }
+
+        /** PORT PATCH P24: is a record pass RUNNING or ASKED FOR?
+         *
+         *  `record` is set by CheckRecordReady() on the audio thread, one block
+         *  after ToggleRecord() requests it, and the port's record cell is a
+         *  stateful control: the host writes the state it wants, reads the
+         *  state back, and can write the same value again inside that window
+         *  (a commit, a repaint of the value it just read). Comparing against
+         *  `record` alone made that second write toggle again and stop the take
+         *  the user had just started. The INTENT is what a request has to be
+         *  measured against, and this is the only place that knows both. */
+        inline bool WantsRecord() { return record || record_target; }
         
         float GetPosition() { 
             float tell = static_cast<float>(looper.GetReadTell());
