@@ -5,7 +5,7 @@ CHOMPI's TAPE firmware (the tape-music sampler / rolling looper from the
 sound generator** for the Ableton Move.
 
 `schwung-chompi/` is additive: it does not modify anything under
-`firmware/` — CHOMPI's DSP is vendored in and patched in place (six small
+`firmware/` — CHOMPI's DSP is vendored in and patched in place (23 surgical
 patches, see [VENDORED.md](VENDORED.md)).
 
 ```
@@ -247,11 +247,20 @@ it.
 **Pitch comes from the key, not from a companion file.** Above 1.5× the engine
 wants a `<name>_double.wav` next to the sample — the card ships one for every
 file, the same audio at twice the speed (half the frames, an octave up) so the
-sample's own high notes can be read from a copy that is not thinned out; a user's assignment has none, and the reader used to claim double speed
-anyway and play it an OCTAVE LOW (measured 321 Hz where 642 was due). PORT PATCH
-P22 clears that claim for assigned slots, so the top of a slot's octave plays at
-the right pitch with the one copy it has (at the cost of the aliasing the double
-exists to avoid).
+sample's own high notes can be read from a copy that is not thinned out. A user's
+assignment has none, and the reader used to claim double speed anyway and play it
+an OCTAVE LOW (measured 321 Hz where 642 was due); PORT PATCH P22 stopped that
+claim for assigned slots. But an assigned sample's "companion" is the sample
+itself — the port returns the same path for both names — and the three files
+this repo ships have no `_double` at all, so the same claim was wrong a second
+way: the port's open creates a 0-byte placeholder instead of failing, the reader
+swapped onto it, and a burst of high pads or a slot-knob sweep ended in
+permanent silence. PORT PATCH P23 answers the question at the reader, when the
+open would really use the companion: it must be a *different* file that the disk
+says has samples in it, a companion that lands empty (or will not open) is
+dropped and the voice plays the file it has, and the top of a slot's octave plays
+at the right pitch with the one copy — at the cost of the aliasing the double
+exists to avoid.
 
 Slot 15 is CHOMPI's built-in RAM buffer — out of the box that is a decaying test
 tone, which is what a fresh module used to play regardless of the knobs. To hear
@@ -281,8 +290,8 @@ host hands the module the job of not leaving threads behind.
 
 So `destroy_instance`:
 
-* sets the instance's worker is out of
-  that instance** (`worker_busy`) before freeing anything. That wait used to be
+* **waits until the instance's worker is out of that instance**
+  (`worker_busy`) before freeing anything. That wait used to be
   a fixed 2 ms sleep — a guess about how long a file operation takes, and wrong
   on a device with a slow card, where the worker stayed inside memory that had
   just been freed;
@@ -388,6 +397,4 @@ the state round-trip came back byte-identical.
 
 CHOMPI's firmware and samples are MIT (© 2026 CHOMPI Club, see the root
 `LICENSE`). The vendored DSP keeps that licence; the adapter is under the
-same terms.
-e; the adapter is under the
 same terms.
