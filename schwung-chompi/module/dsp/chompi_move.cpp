@@ -924,7 +924,7 @@ static const char* kUiHierarchy
       "{\"key\":\"looper_pitch\"},"
       "{\"key\":\"looper_scrub\"},"
       "{\"key\":\"looper_dub_gain\"},"
-      "{\"key\":\"looper_start\"},\"{\"key\":\"looper_end\"},\"{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\",\"looper_start\",\"looper_end\"]},"
+      "{\"key\":\"looper_start\"},{\"key\":\"looper_end\"},{\"key\":\"loop_clear\"}],\"knobs\":[\"looper_record\",\"looper_play\",\"looper_reverse\",\"looper_pitch\",\"looper_scrub\",\"looper_dub_gain\",\"looper_start\",\"looper_end\"]},"
       "\"recorder\":{\"label\":\"Recorder\",\"params\":[{\"key\":\"record\"},"
       "{\"key\":\"input_monitor\"},"
       "{\"key\":\"input_gain\"},"

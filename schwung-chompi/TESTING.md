@@ -125,12 +125,27 @@ ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./serve_params
 (The `Permanently added 'move.local' … to the list of known hosts` line is
 just SSH accepting the host key the first time — harmless.)
 
+**Then the pages themselves** — the one probe that answers "does the host have
+anything to draw at all":
+
+```sh
+ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./hierarchy_probe ./dsp.so .'
+```
+
+It must end `VERDICT: PASS (0 failures)`. It parses `ui_hierarchy` and
+`chain_params` the way the host does, and checks that every page names a param
+the module serves and links to a level that exists. Run it on the device for
+the reason it exists: a stray quote in one level's param list once left the
+Move showing a single preset page reading "no presets" and none of the module's
+pages, while every other probe passed — they all ask for params by key, and
+none of them ever asked for the pages.
+
 Expect four sections. The important ones:
 
 | key | expected |
 | --- | --- |
-| `chain_params` | 2815 bytes, 35 `{…}` entries, *starts with `[` and ends with `]`* |
-| `ui_hierarchy` | 1934 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
+| `chain_params` | 3458 bytes, 34 `{…}` entries, *starts with `[` and ends with `]`* |
+| `ui_hierarchy` | 1827 bytes, starts `{"pad_layout":"chromatic"…`, levels root/tape/looper/recorder/setup/samples |
 | `split_voices` | empty (`(none)`) — that is the correct answer, not a failure |
 | `state` | 16-key flat JSON |
 
@@ -374,6 +389,7 @@ and it will be silent rather than noisy, and `debug_view` will name it.
 | `cd: /data/UserData/…/chompi-probe: No such file or directory` | `make probe` did not run (it creates that directory) — fix step 0 first |
 | Module missing from the list, nothing in the log | wrong directory/`id`/filename — must be `<id>/dsp.so` |
 | Loads, but no knobs / no pad layout | `serve_params` on the device (level 1): `chain_params`, `ui_hierarchy` |
+| **No pages at all after a deploy** — one preset page reading "no presets" | the hierarchy JSON did not parse, and the host throws the whole document away rather than drawing half of it. `./hierarchy_probe ./dsp.so .` in the probe directory names the document and prints `VERDICT: FAIL`; a stray quote in one level's param list did exactly this |
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
 | Sound went away and never came back | ask for `debug_voice`: a voice with `p1` and `op1` is one whose open failed and stuck. Deleted/renamed sample files do this; P12/P13 in `VENDORED.md` are the fix |
 | Silent after playing the *top* of the keybed (or after sweeping `slot`/`bank`), fine again after a reload | a `_double` companion that is not there was opened as a 0-byte placeholder and streamed forever — P23 in `VENDORED.md`. Check `ls -la …/chompi/samples/ \| grep double` for a 0-byte file; the fixed reader ignores it and plays the base sample (rebuild/redeploy if you are on an older `.so`) |
