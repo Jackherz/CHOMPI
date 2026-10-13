@@ -158,16 +158,6 @@ static bool IsJson(const char* buf, int len)
     return r.p == r.end;
 }
 
-/* Where a JSON string that starts at `p` (which must be a quote) ends. */
-static const char* SkipString(const char* p, const char* end)
-{
-    for(p++; p < end; p++){
-        if(*p == '\\'){ p++; continue; }
-        if(*p == '"') return p + 1;
-    }
-    return nullptr;
-}
-
 /* Copy the value of `"field":"VALUE"` at or after `from`. Whitespace around the
  * colon is allowed -- chain_params is written with spaces, ui_hierarchy without. */
 static const char* StringValue(const char* from, const char* end, const char* field,

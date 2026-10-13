@@ -267,12 +267,17 @@ static void* chompi_io_worker(void* arg)
     sp.sched_priority = 0;
     pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
 
+    /* Off the board there are no cores to keep clear and no cpu_set_t at all:
+     * the host tools (and `make check-hierarchy` on a Mac) build this file for
+     * the machine that runs it, and the pin is the device's business. */
+#if defined(__linux__)
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(0, &set);
     CPU_SET(1, &set);
     CPU_SET(2, &set);
     pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
 
     while(true)
     {
