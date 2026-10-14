@@ -98,10 +98,11 @@ static double goertzel(const double* x, long n, double freq)
     return s1 * s1 + s2 * s2 - coeff * s1 * s2;
 }
 
-/* Pad 68 is the bottom-left pad. The keybed is a piano (PORT PATCH P22), so it
- * sounds the sample a semitone count below its own speed — which is what the
- * pad does; the probe only cares WHICH FILE plays, and reads that from the
- * energy in the loudest bin, so the pitch itself is not asserted here. */
+/* Pad 68 is the bottom-left pad: the keybed is a chromatic ladder whose root
+ * is pad 80 (PORT PATCH P27), so this pad sounds the sample an octave below its
+ * own speed — which is what the pad does; the probe only cares WHICH FILE
+ * plays, and reads that from the energy in the loudest bin, so the pitch itself
+ * is not asserted here. */
 static double phase(const char* label, double seconds, int note = 68)
 {
     uint8_t on[3] = {0x90, (uint8_t)note, 100};

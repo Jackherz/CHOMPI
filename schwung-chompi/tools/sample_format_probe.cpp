@@ -40,9 +40,10 @@ static int              checks = 0, failures = 0;
 
 static const double kTone404 = 404.25; /* 440 Hz in the file, 44.1/48 engine */
 
-/* The pad to play the tone on. The keybed is a piano; pad 75 is the C at the
- * sample's own speed (1.00x). Pad 68 is that C an octave down. */
-static const int kToneNote = 75; /* the piano C at 1.00x */
+/* The pad to play the tone on. The keybed is a chromatic ladder whose root is
+ * pad 80 (PORT PATCH P27): pad 80 plays the sample at its own speed (1.00x),
+ * and pad 68 is that an octave down. */
+static const int kToneNote = 80; /* the ladder's root: 1.00x */
 
 static void check(const char* what, bool ok, const char* detail)
 {
@@ -57,19 +58,12 @@ static void set(const char* k, const char* v) { api->set_param(inst, k, v); }
 /* The module's own card format, written by hand: 16-bit stereo 48 kHz with the
  * audio at byte 44. This is the file the last check plays -- the one the WAV
  * view must leave completely alone. */
-static void write_card_file(const char* dir)
+static bool write_card_file_at(const char* path)
 {
-    char path[512];
-    snprintf(path, sizeof path, "%s/samples/cubbi_a1.wav", dir);
-    char dirpath[512];
-    snprintf(dirpath, sizeof dirpath, "%s/samples", dir);
     /* the caller creates the directory: this only needs to exist */
     FILE* f = fopen(path, "wb");
     if(!f)
-    {
-        printf("cannot write %s\n", path);
-        return;
-    }
+        return false;
     const int frames = 48000;
     const uint32_t data = (uint32_t)frames * 4;
     uint8_t h[44] = {0};
@@ -97,7 +91,24 @@ static void write_card_file(const char* dir)
         fwrite(pair, sizeof(int16_t), 2, f);
     }
     fclose(f);
-    printf("card: %s (440 Hz, 16-bit stereo)\n", path);
+    return true;
+}
+
+/* What name the module plays, with nothing assigned, is the JAMMI convention
+ * file (`kOneMode` is JAMMI) -- write that one, or the last check reads the
+ * module's own silence. The CUBBI bank name gets the same bytes as well. */
+static void write_card_file(const char* dir)
+{
+    static const char* const names[2] = {"jammi_a1.wav", "cubbi_a1.wav"};
+    for(int i = 0; i < 2; i++)
+    {
+        char path[512];
+        snprintf(path, sizeof path, "%s/samples/%s", dir, names[i]);
+        if(write_card_file_at(path))
+            printf("card: %s (440 Hz, 16-bit stereo)\n", path);
+        else
+            printf("cannot write %s\n", path);
+    }
 }
 
 static void settle_ms(int ms)
@@ -452,7 +463,7 @@ int main(int argc, char** argv)
         settle_ms(900);
         const Capture c = press(kToneNote, 1.0);
         char          d[200];
-        snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz (the card's cubbi_a1 is 440 Hz)", c.rms,
+        snprintf(d, sizeof d, "rms=%.4f peak=%.1fHz (the card's jammi_a1 is 440 Hz)", c.rms,
                  c.peak_f);
         check("the module's own card file still plays", c.rms >= 0.005, d);
     }
