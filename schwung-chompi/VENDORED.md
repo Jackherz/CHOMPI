@@ -447,7 +447,7 @@ whole speed range — which is why the root is pad 80 and not the bottom-left pa
 The keybed is pinned to one file (JAMMI, bank 0, slot 1) so nothing else can put
 a second sample under a pad; mode, bank and slot stay served for old Sets and
 are no longer drawn. `tools/keybed_octave_probe` sweeps all 32 pads at rest, at
-++12 and at −12, checks the module's `octave` knob, checks that mode, bank and
++12 and at −12, checks the module's `octave` knob, checks that mode, bank and
 slot cannot change what plays, and checks the three `_double` states above 1.5×.
 
 Measured (44.1 kHz engine on a 48 kHz 480 Hz file, so 1.00× is 441 Hz): pad 68
