@@ -43,6 +43,7 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P25 | `chompi_move.cpp`, `LooperEngine.h`, `DSPEngine.h` | `looper_scrub` is a tape PLAYHEAD, not the hardware's scrub wheel: the write is a turn against the value last handed the host, `get_param` answers the head's position, and `MoveLooperHead()` moves the read head at once — playing or parked (see below) |
 | P26 | `Sampler.h`, `LooperEngine.h`, `DSPEngine.h`, `chompi_move.cpp` | the tape has a window: `looper_start` / `looper_end` (the cells `Loop Start` / `Loop End`) are fractions of the take, derived per block into the read head's bounds, and the head turns over between them instead of at the ends of the whole take (see below) |
 | P27 | `chompi_move.cpp` | the keybed's pitch is the NOTE minus the root (pad 80), not an index into a table of pads: every pad one semitone from the next, no two pads on one pitch, and Move's octave and transpose buttons move the whole keyboard with the notes they send (see below) |
+| P28 | `Sampler.h`, `LooperEngine.h`, `DSPEngine.h`, `chompi_move.cpp` | the window's DIRECTION: End below Start runs the same span backwards, through a 0.35 s glide that passes through zero, in a field of its own (`window_dir_`) that multiplies the tape's rate where it is decided — never the pitch's sign, so Loop Pitch / Loop Rev go on reading what the user set (see below) |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -412,16 +413,76 @@ to nothing. The read head turns over between the bounds instead of at the ends
 of the whole take, and the take's edge fade follows the window's edges.
 
 The ORDER of the pair is enforced at use, never in the setter: a knob that snaps
-back under the hand reads as a broken control rather than as a limit. Today a
-crossed pair (End below Start) is the span between the two, played in the tape's
-direction; running the window BACKWARDS is the other half of the model and needs
-the direction glide that goes with it — a 0.35 s pass through zero, in its own
-state field.
+back under the hand reads as a broken control rather than as a limit. A crossed
+pair (End below Start) is the span between the two — and, since P28, that span
+run BACKWARDS (the other half of the model, with the direction glide that goes
+with it; see P28 below).
 
 `tools/looper_probe` measures the window in LAPS of the take — whole tape 2
 laps, half the tape 4, a window past the tone 0 — because levels cannot tell a
 window from a tape; it also reads the pair back as written (0.6000 / 1.0000) and
 the crossed pair as written (0.6000 / 0.2000).
+
+### P28 in detail
+
+The window has a direction.
+
+The order of the pair is the direction of travel: Start below End plays the span
+forwards, End below Start plays the same span backwards. The two knobs never
+trade meaning — Start is where the window starts from in time, End where it
+stops; reversed, that simply means the head runs from End back to Start. This is
+the reference module's rule (`forgetful`, its "THE WINDOW IS BETWEEN THE TWO
+KNOBS, WHICHEVER WAY ROUND THEY ARE, AND ITS ORDER IS ITS DIRECTION"), and the
+mechanics follow it in three particulars:
+
+- **Its own field, never the speed's sign.** `FileSampler` keeps `window_dir_`
+  (+1 / −1) beside the varispeed, and the two meet once, as a product, at the
+  one place the tape's rate is decided (the target in `PopStereoSamps`). The
+  port's Loop Pitch / Loop Rev cells read back the number the user set, and its
+  sign is the direction *they* selected; written into the varispeed, a crossed
+  window would make those cells report a reverse nobody asked for — and the host
+  learns an enum's wire format from exactly that read. A reversed window at −1×
+  is forward again, which is what two reversals mean.
+- **A glide through zero, not a flip.** `UpdateWindowDirection()` ramps the
+  field linearly from +1 to −1 over `kWindowFlipSeconds` (0.35 s, the reference
+  module's `WINDOW_FLIP_SECONDS`): the tape slows, stops and runs back the way a
+  tape would, instead of cutting to the other direction at full speed. The
+  tape's own slew (the `fonepole` on `scrub_`) then follows the ramp, as it
+  follows every other change of speed on this instrument, and the engine's
+  `reverse_` flips where it always has — when the slewed rate crosses zero — so
+  the head re-enters at the right edge, the end fade counts to the right edge,
+  and a dub writes in the right direction, all unchanged. A step is re-measured
+  from wherever the glide is when the target changes, so crossing back
+  mid-glide turns round from there.
+- **It advances once a block, from `PerBlock()`, whatever the transport is
+  doing** — before the empty-take early return in `LooperEngine::Process`. The
+  glide runs from the knob move, not from the next play: a pair crossed while the
+  tape is parked (or empty) has turned round by the time it rolls, so the take
+  starts in the direction the knobs say.
+
+The port writes nothing new for this: `looper_start` / `looper_end` are set and
+read back exactly as P26 left them (the crossed pair as written), and the engine
+derives the direction from the two numbers itself. One diagnostic key,
+`looper_window_dir`, answers the glide's current value (1.0000 / −1.0000, and
+the numbers between while the tape turns round) so a probe can see the glide
+without inferring it from the head.
+
+Measured by `tools/looper_probe`, on a take that is a rising four-note arpeggio
+end to end (a tone cannot tell a direction; a rising melody played backwards
+falls, through any filter): Start 0.2 / End 0.8 runs the head forward and the
+melody rises (+1.00); crossing to 0.8 / 0.2 while the tape rolls reads
+`looper_window_dir` 1.0000 the moment after the write, 0.0049 at 0.17 s and
+−1.0000 at 0.57 s, after which the head runs backwards (−0.75) and the melody
+falls (−1.00) while `looper_reverse` still reads `Off` and `looper_pitch`
+1.0000; the reversed head travels 0.204..0.777 of the take, 3 laps in 3 s, the
+same as the forward window; a Loop Pitch of −1 on top runs it forward again with
+the reverse cell reading `On` (the one the user selected); putting the pair back
+in order glides back to 1.0000 and runs forward; and a pair crossed while parked
+reads −1.0000 before play and runs backwards from the first pass. Against the
+P27 build the same section fails 6 checks with the old behaviour's signature:
+the crossed pair runs forward (`head +1.00`, melody +1.00), a negative pitch on
+it is one reversal rather than two (`head -1.00`), and `looper_window_dir` is
+not served.
 
 ### P27 in detail
 

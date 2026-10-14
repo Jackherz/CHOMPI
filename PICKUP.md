@@ -1,15 +1,19 @@
 # CHOMPI — what's next
 
 *(Rewritten 2026-10-14 after the second sandbox wipe — the earlier copy, `LOOPER-MODEL.md` and
-`WINDOW-DEVICE-CHECK.md` went with it. The P27 commit was recovered and verified exact; see
-`RECOVER-P27.md`. Everything a session needs is also in the repo working tree under
-`p27-recovery/`.)*
+`WINDOW-DEVICE-CHECK.md` went with it. The P27 commit was recovered and verified exact.
+Updated later the same day for P28. Everything a session needs is in this file and the repo.)*
 
 ## State
 
-- **`main`** = `21e1157` — PR #2 merged (`88f954e`, +1673/−86) on top of PR #1 (`b851126`).
-  `main`'s tree is `e8e536b7…`, identical to `88f954e`'s tree.
-- **P27 — the keybed — is on the remote now (2026-10-14).** The lost local commit `cc89729`
+- **`main`** = `95d6990` — PR #3 merged 2026-10-14 (P27 and this document), on top of
+  PR #2 (`21e1157`) and PR #1 (`b851126`).
+- **P28 — the window's direction — is on this session's branch `arena/40d0251a-chompi`**
+  (rebased onto `main`, so it fast-forwards): commit `283b08d`, opened as **PR #4** (base
+  `main`). Bench green 2026-10-14 (the whole host suite; the new looper_probe section fails 6
+  checks against the P27 build with the old behaviour's signature). **Device pass owed** — see
+  Device checks owed, item 0. Not merged until it is.
+- **P27 — the keybed — is in `main` (PR #3, merged 2026-10-14).** The lost local commit `cc89729`
   (`10565eea…`, never pushed) was recreated from its diff as `b641400` on
   `arena/a0c40056-chompi` and opened as **PR #3** (base `main`): ten files byte-identical to
   `cc89729`'s tree (blob hashes match the diff's `index` lines), `chompi_move.cpp` re-based onto
@@ -21,8 +25,8 @@
   gates 1/1 on the Mac build, every probe green on the Move, and the by-ear pass done: the owner,
   "everything works as it should". P27 has nothing left owed. (`RECOVER-P27.md`, `DEVICE-RECIPE.md` and `p27-recovery/` died with the old sandbox;
   this file and the repo are what survived.)
-- The old session branch `arena/237e5843-chompi` sits at `88f954e`, whose content is already inside
-  `main`. Base new work on `main`.
+- The old session branches: `arena/237e5843-chompi` (`88f954e`) and `arena/a0c40056-chompi`
+  (`bb24f5c`) are both inside `main`. This session's branch is `arena/40d0251a-chompi`.
 
 ## P27 — the keybed reads the note
 
@@ -34,13 +38,26 @@ Numbering: the keybed is P27; the tape's window is P26 (`e7f2b41`); the moving h
 Caveat (in the code): a pad held across Move's own octave/transpose press stops — the note is the
 key, and that press renumbers it.
 
+## P28 — the window has a direction
+
+The order of the pair is the direction: `Strt` below `End` plays the span forwards, `End` below
+`Strt` plays the **same span backwards**. The knobs never swap meaning. The direction is its
+**own field** in `FileSampler` (`window_dir_`, +1/−1), multiplied into the tape's rate at the one
+place it is decided (the target in `PopStereoSamps`) — never the pitch's sign, so `Loop Pitch` /
+`Loop Rev` go on reading what the user set, and a negative pitch on a crossed pair is forward
+again. It **glides through zero** over 0.35 s (`kWindowFlipSeconds`, forgetful's number), a linear
+ramp the tape's own slew follows; `reverse_` flips where it always did (the slewed rate crossing
+zero). It advances once a block from `PerBlock(frames)`, whatever the transport is doing, so a pair
+crossed while parked plays backwards from the first pass. One diagnostic key: `looper_window_dir`.
+Nothing new is served: `chain_params` 3458 B / 34, `ui_hierarchy` 1760 B, as before.
+
 ## Next, in order
 
 1. ~~**The device pass for P27**~~ — **done 2026-10-14** (see Device checks owed). P23's keybed
-   check closed with it. **Next up: item 2.**
-2. **The window's direction** (slice 2): END below START runs the tape backwards through the span,
-   the flip gliding through zero (their 0.35 s), kept in its own field so the read-back cannot
-   report a direction nobody selected. Today a crossed pair is only the span, played forwards.
+   check closed with it.
+2. ~~**The window's direction**~~ (slice 2) — **built and bench-verified 2026-10-14 as P28**, PR #4.
+   **Owed: the device pass** (Device checks owed, item 0). Then merge PR #4. **Next up after
+   that: item 3.**
 3. **The one-button transport** — the read-back names the next press (STOP / DUB / PLAY).
 4. **Item 4** (stop shipping `*_double.wav`; above 1.5× playback keeps using the original) **and
    item 5** (Tape's `end` renamed so it draws as a loop bound) — both small.
@@ -48,6 +65,54 @@ key, and that press renumbers it.
 
 ## Device checks owed
 
+0. **The window's direction (P28)** — the recipe, for the Mac (zsh). Fetch and build, with the
+   gates (two P28 gates added: the new key in `dsp.so`, the new section in the probe):
+
+   ```sh
+   cd ~/CHOMPI
+   git fetch origin arena/40d0251a-chompi
+   git merge FETCH_HEAD
+   cd ~/CHOMPI/schwung-chompi
+   make clean
+   make check ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
+   grep -c "Loop End" build/module/dsp.so
+   grep -c "the tape playhead" build/aarch64/looper_probe
+   grep -c "looper_window_dir" build/module/dsp.so
+   grep -c "End below Start runs it backwards" build/aarch64/looper_probe
+   make check-hierarchy
+   ```
+
+   All four greps must print `1`; `check-hierarchy` must end `VERDICT: PASS (0 failures)` (this
+   also closes owed item 3 below, the Mac host run). Then the probes on the Move — `looper_probe`
+   in a directory of its own, because it writes `looper.wav` beside the samples; it takes about
+   two minutes, paced like the audio callback:
+
+   ```sh
+   make probe ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
+   ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./serve_params ./dsp.so chain_params ui_hierarchy | grep "###"'
+   ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && ./hierarchy_probe ./dsp.so . | tail -3'
+   ssh ableton@move.local 'cd /data/UserData/schwung/chompi-probe && rm -rf lp && mkdir -p lp/samples && cp dsp.so lp/ && cp samples/*.wav lp/samples/ && cd lp && ../looper_probe ./dsp.so . 2>&1 | tail -32'
+   ```
+
+   Expected: `chain_params (3458)`, `ui_hierarchy (1760)`, `hierarchy_probe` PASS, and
+   `looper_probe` `VERDICT: PASS (0 failures)` with the direction section reading, give or take
+   the last digit: forward `dir 1.0000, head +1.00, melody +1.00`; the glide `at the write
+   1.0000, 0.17 s in 0.0049, 0.57 s in -1.0000`; reversed `head -0.75 … melody -1.00`;
+   `reverse Off, pitch 1.0000, start 0.8000, end 0.2000`; `head 0.204..0.777, 3 laps`;
+   negative pitch on top `head +0.75, melody +1.00, reverse On`; parked `dir while parked
+   -1.0000, head on play -0.75`. Then install and listen:
+
+   ```sh
+   make deploy ZIG=1 ZIG_BIN="/tmp/zigvenv/bin/python3 -m ziglang"
+   ```
+
+   By ear (TESTING.md §3 item 4, "The window's direction"): record a few distinct notes, set
+   `Strt`/`End` to a span, then take `End` down past `Strt`. The tape slows, stops and runs back
+   over about a third of a second — not a cut — and the notes come out in reverse order, the pass
+   as long as it was forwards. `LOOPIT` still reads `1.0000`. `End` back above `Strt`: it turns
+   round again. `LOOPIT` below zero on a crossed pair: forward again, and the pitch cell shows the
+   reverse because you set it. Cross the pair while stopped, then play: backwards from the first
+   pass, no turnaround. Report what is different, if anything; then PR #4 merges.
 1. ~~The keybed (P27)~~ — **done 2026-10-14.** On the Mac, the gates: `grep -c "Loop End"
    build/module/dsp.so` = 1, `grep -c "the tape playhead" build/aarch64/looper_probe` = 1. On the
    Move: `serve_params` 3458 B / 34 entries and `ui_hierarchy` 1760 B; `hierarchy_probe` PASS
@@ -67,6 +132,17 @@ key, and that press renumbers it.
   implemented better"; wait for them to raise it. Candidates noted before: the step edge the first
   pass writes into the take; the frame written twice when pitch ≠ 1 → a ramp + a per-frame guard.
 - The Looper page has a free 8th knob cell if something wants it.
+- **A dub into a window smears the take** (found 2026-10-14 while building P28; it is P26's,
+  not P28's, and P28 does not change it). The write head wraps at the TAKE's ends
+  (`WriteLoop`/`WriteJumpStart`), the read head at the WINDOW's (`ReenterWindow`), so once the
+  read head has re-entered, the FIFO's `old × gain + input` is written where the write head is —
+  past the window's end, then from the top of the take — and each lap copies the window's content
+  to a shifted place. Playback of a window is fine; it is a record pass over a window that drifts.
+  Candidate fix: on `ReenterWindow()`, re-seat the write head on the read head the way
+  `SetReverse()` does (clear the FIFO, `WriteJump(read head)`, `rev_pushback`), dropping ≤32
+  samples inside the 480-sample edge fade. Wait for the owner to raise it, or fold it into the
+  dub-gain item. `tools/looper_probe` sidesteps it by ending the dub pass a first take rolls into
+  before it measures the window.
 
 ## Design reference (was `LOOPER-MODEL.md`)
 
@@ -105,8 +181,11 @@ Distilled from `kliegsablaze/forgetful` (re-clone if needed):
 
 - Build: `cd schwung-chompi && make host tools`; cross-build `make check ZIG=1 ZIG_BIN="…"` (zig
   0.17.0 via a venv on the Mac: `/private/tmp/zigvenv`).
-- Suite (13, all green at P27): keybed, sample_map, mode_bank 6/6, sample_format 34/34, env 35/35,
-  looper, key, unload, slot_knob, param_readback, state_roundtrip, hierarchy, render.
+- Suite (13, all green at P28): keybed, sample_map, mode_bank 6/6, sample_format 34/34, env 35/35,
+  looper (now with the direction section; ~2 min), key, unload, slot_knob, param_readback,
+  state_roundtrip, hierarchy, render (peaks 1364 / 279 / 3228 ram / cubbi / record, identical to
+  `main`'s build). `env_probe` wants a directory of its own that it may clear — not the one the
+  `.so` sits in; `sample_format_probe` needs `make_sample_variants.py` run first.
 - Give every probe its **own working directory**. One-sample convention: `kOneMode=0` (JAMMI),
   `kOneBank=0`, `kOneSlot=1` (`chompi_move.cpp`); slot-1 file = `jammi_a1.wav`.
 - `key_probe` passes unmodified (`jammi/0:011111111111111-`); `key_probe.cpp` and

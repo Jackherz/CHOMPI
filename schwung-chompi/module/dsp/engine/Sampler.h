@@ -40,11 +40,10 @@ namespace daisy
          *
          *  1. ORDER IS ENFORCED HERE, NOT IN THE SETTER. A knob that snaps
          *     back under the hand reads as a broken control, so the two
-         *     fractions are stored as written and put in order at use. (For
-         *     now a crossed pair means the span between them, played in the
-         *     tape's own direction; running the window backwards, which is
-         *     what a tape does when you cross the ends over, is the next step
-         *     and needs the direction glide that goes with it.)
+         *     fractions are stored as written and put in order at use. THE
+         *     ORDER IS THE DIRECTION (PORT PATCH P28): End below Start is the
+         *     same span of tape run backwards, which is what a tape does when
+         *     you cross the ends over. See the direction block below.
          *  2. THE HEAD RE-ENTERS AT THE EDGE IT IS TRAVELLING AWAY FROM, or it
          *     lands on the boundary it is about to cross and wraps every
          *     sample. Checking happens BEFORE the read, so nothing outside
@@ -57,6 +56,66 @@ namespace daisy
          *  every existing bench result valid. */
         inline uint32_t WindowBase() const { return win_lo_; }
         inline uint32_t WindowTop() const { return win_hi_ >= 2 ? win_hi_ - 2 : 0; }
+
+        /** PORT PATCH P28: the window's DIRECTION -- which way round its two
+         *  ends are.
+         *
+         *  End below Start runs the tape BACKWARDS through the span: the two
+         *  knobs never swap meaning (Start is where the window starts from in
+         *  time, End where it stops), and which of them is on the left decides
+         *  the direction of travel. The reference module does it the same way.
+         *
+         *  Three things about how, and each is a rule rather than a detail:
+         *
+         *  - IT IS ITS OWN FIELD, never folded into the speed. The port's
+         *    Loop Pitch / Loop Rev cells read back the number the user set,
+         *    and the sign of that number is the direction THEY selected.
+         *    Written into the varispeed, a crossed window would make those
+         *    cells report a reverse nobody asked for -- and the host learns an
+         *    enum's wire format from exactly that read. So the direction is
+         *    +1 / -1 beside the speed, and the two MULTIPLY at the one place
+         *    the tape's rate is decided (the target in PopStereoSamps): a
+         *    reversed window at -1x is forward again, which is what two
+         *    reversals mean.
+         *
+         *  - IT GLIDES THROUGH ZERO rather than flipping: a linear ramp from
+         *    +1 to -1 over kWindowFlipSeconds, so crossing End past Start
+         *    slows the tape, stops it, and runs it back the way a tape would,
+         *    instead of cutting to the other direction at full speed. The
+         *    tape's own slew (the fonepole on scrub_) then follows the ramp,
+         *    as it follows every other change of speed on this instrument.
+         *    0.35 s is the reference module's number: long enough not to
+         *    click, short enough that the gesture and the sound belong to
+         *    each other -- this one is a direct consequence of the knob under
+         *    the hand, and a long lag would read as the control being broken.
+         *
+         *  - IT ADVANCES ONCE A BLOCK, FROM PerBlock(), WHATEVER THE TRANSPORT
+         *    IS DOING. The glide runs from the knob move, not from the next
+         *    play: a window crossed while the tape is parked (or empty) has
+         *    turned round by the time it rolls, so the take starts in the
+         *    direction the knobs say.
+         *
+         *  A step is re-measured from wherever the glide is when the target
+         *  changes, so crossing back mid-glide turns round from there. */
+        inline float GetWindowDirection() const { return window_dir_; }
+
+        void UpdateWindowDirection(size_t frames)
+        {
+            const float wdir = (window_end_ < window_start_) ? -1.f : 1.f;
+            if(wdir != window_dir_target_)
+            {
+                window_dir_target_ = wdir;
+                window_dir_step_   = fabsf(wdir - window_dir_) / (kWindowFlipSeconds * sr_);
+            }
+            if(frames == 0 || window_dir_ == window_dir_target_)
+                return;
+            const float move = window_dir_step_ * static_cast<float>(frames);
+            const float diff = window_dir_target_ - window_dir_;
+            if(fabsf(diff) <= move || move <= 0.f)
+                window_dir_ = window_dir_target_;
+            else
+                window_dir_ += (diff > 0.f) ? move : -move;
+        }
 
         inline bool WindowOutside()
         {
@@ -88,9 +147,20 @@ namespace daisy
         /** Derive the window in samples from the two fractions. Once a block,
          *  like the reference module: cheap, and it means a take being
          *  recorded or a changed fraction is picked up without every sample
-         *  doing the arithmetic. */
-        void PerBlock()
+         *  doing the arithmetic.
+         *
+         *  `frames` is the block just about to be rendered, and it is what the
+         *  direction glide advances by (PORT PATCH P28). The setters call this
+         *  with 0: they re-derive the bounds and re-aim the glide at once, and
+         *  leave the advancing to the audio thread. */
+        void PerBlock(size_t frames = 0)
         {
+            /* The direction first, and before the size test below: an empty
+             * take has no bounds to derive, but the glide still has to run,
+             * so the first take recorded into a crossed window plays
+             * backwards from its first pass. */
+            UpdateWindowDirection(frames);
+
             /* in samples, kept even so a stereo pair stays a pair */
             const uint32_t size = static_cast<uint32_t>(ram_buff.GetSize()) & ~1u;
             if(size < kMinWindowSamples)
@@ -207,6 +277,13 @@ namespace daisy
 
             {
                 float target = playing ? varispeed_factor : scrub_target_;
+                /* PORT PATCH P28: the window's own direction, on top of the
+                 * knob's. This is the one place the two meet, and they meet
+                 * as a product: the varispeed keeps the sign the user set
+                 * (which is what the port reads back), and a crossed window
+                 * turns the result round -- through zero, because the glide
+                 * is a ramp and the slew below follows it. */
+                target *= window_dir_;
                 if(reset)
                     target = 0.f;
 
@@ -501,6 +578,15 @@ namespace daisy
          * end fade runs, so a window shorter than that would fade into its
          * own beginning. */
         const uint32_t kMinWindowSamples = 1024;
+
+        /** PORT PATCH P28: the window's direction, +1 forward / -1 backwards,
+         *  as a glide: where it is, where it is going, and how far it moves a
+         *  sample (see UpdateWindowDirection). Its own field, never the
+         *  varispeed's sign. */
+        float window_dir_ = 1.f, window_dir_target_ = 1.f, window_dir_step_ = 0.f;
+        /* How long the head takes to turn round when End crosses Start. The
+         * reference module's figure; it passes through zero on the way. */
+        const float kWindowFlipSeconds = 0.35f;
 
         /** reverse handling */
         bool reverse_;

@@ -112,6 +112,7 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | 8 knobs | `chain_params` — the on-screen controls, paged by the shadow UI |
 | pitch/speed fader | `varspeed`, and `looper_pitch` / `looper_reverse` (one number: the loop's speed, with a negative value playing it backwards, so the two cells follow each other). The Looper page's `Loop Pitch` also carries the reverse: a negative value is the tape turning around. `looper_scrub` — the tape playhead — is still served but no longer drawn (the window's bounds took its job; VENDORED P25). All of them read back the number they were set to — the host repaints `get_param` when a knob is released — and a `Clear Loop` returns them to 1.00×, forward |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
+| (no CHOMPI equivalent) | the looper's **window**: `looper_start` / `looper_end` (`Strt` / `End` on the Looper page), fractions of the take the loop turns over between. The order of the pair is its direction: `End` below `Strt` plays the same span **backwards**, turning round through a 0.35 s glide rather than a cut, in a field of its own — `Loop Pitch` / `Loop Rev` keep reading what you set them to, and a negative pitch on a crossed pair is forward again (VENDORED P26, P28) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
 | rec / play buttons | `looper_record` (the cell reads `rec` while a pass runs, `lorec` when idle), `looper_play`, `record` |
 | overdub gain (the two keys beside play, +-0.1 each) | `looper_dub_gain` — the Looper page's `Dub Gain`, 0…1. Each overdub pass rewrites the loop as `old × gain + input`, so 1 layers the new take over the old loop (0.94× measured), 0.5 halves it (0.25×), and 0 replaces it outright. The change is slewed (~0.2 s) and a pass that finishes before the slew has arrived keeps more of the old loop — the engine's own behaviour, and the same on the hardware |
@@ -339,7 +340,9 @@ make host && make tools
 #                     frequency because every probe sample is a tone
 #   looper_probe      record, play and clear a loop; the dub gain's per-pass
 #                     law (1 keeps, 0.5 halves, 0 erases); the record cell's
-#                     live state; and where the FX sit
+#                     live state; where the FX sit; the playhead; the window
+#                     (in laps) and its direction (End below Start runs the
+#                     span backwards, measured off a rising melody)
 #   keybed_octave_probe  the keybed is a keyboard: all 32 pads' pitches, the
 #                     octave shifts (Move's and the module's), one sample on
 #                     the pads, and the >1.5x companion

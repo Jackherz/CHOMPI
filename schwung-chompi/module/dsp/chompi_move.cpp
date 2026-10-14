@@ -665,7 +665,13 @@ static void apply_param(ChompiInstance* inst, const char* key, const char* val)
          * leaves the order of the pair alone -- see FileSampler), because a
          * float cell takes its dial position from what it is handed, so a
          * read-back that disagreed with the engine would put the pointer
-         * somewhere the tape is not. */
+         * somewhere the tape is not.
+         *
+         * P28: the ORDER of the pair is its direction. End below Start runs
+         * the tape backwards through the span, and the engine derives that
+         * from the two numbers itself (with a 0.35 s glide through zero), in
+         * a field of its own -- nothing is written to the pitch here, so
+         * Loop Pitch and Loop Rev go on reading what the user set them to. */
         e.SetLooperWindowStart(f);
         inst->saved.looper_start = e.GetLooperWindowStart();
     }
@@ -1366,7 +1372,10 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
          * dial position from this, and a label here parks the pointer at
          * zero. A crossed pair reads back as written -- the engine puts the
          * two in order at its own use, so the screen keeps showing what the
-         * user set, which is also how the reference module does it. */
+         * user set, which is also how the reference module does it. (P28:
+         * and plays the span backwards; the direction is the engine's own
+         * field, read below as looper_window_dir, never these two cells'
+         * numbers or the pitch's sign.) */
         return snprintf(buf, buf_len, "%.4f", inst->saved.looper_start);
     if(strcmp(key, "looper_end") == 0)
         return snprintf(buf, buf_len, "%.4f", inst->saved.looper_end);
@@ -1503,6 +1512,14 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         return snprintf(buf, buf_len, "%.4f",
                         inst->engine.GetLooperIsEmpty() ? 0.f
                                                         : inst->engine.GetLooperPosition());
+    if(strcmp(key, "looper_window_dir") == 0)
+        /* Diagnostic (PORT PATCH P28): the window's direction as the engine's
+         * glide has it -- 1.0000 with Start below End, -1.0000 with the pair
+         * crossed, and the numbers between while the tape is turning round
+         * (0.35 s, through zero). Its own field, which is the point: the
+         * Loop Pitch / Loop Rev cells keep reading the direction the user
+         * selected, and tools/looper_probe reads THIS to see the glide. */
+        return snprintf(buf, buf_len, "%.4f", inst->engine.GetLooperWindowDirection());
     if(strcmp(key, "debug_files") == 0)
     {
         /* Small bounded diagnostic: 15 flags for slots 1..15 in the current
