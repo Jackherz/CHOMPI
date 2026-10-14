@@ -7,9 +7,9 @@
 
 ## State
 
-- **`main`** = `21e1157` — PR #2 merged (`88f954e`, +1673/−86) on top of PR #1 (`b851126`).
-  `main`'s tree is `e8e536b7…`, identical to `88f954e`'s tree.
-- **P27 — the keybed — is on the remote now (2026-10-14).** The lost local commit `cc89729`
+- **`main`** = `95d6990` — PR #3 merged 2026-10-14 (P27 and this document), on top of
+  PR #2 (`21e1157`) and PR #1 (`b851126`).
+- **P27 — the keybed — is in `main` (PR #3, merged 2026-10-14).** The lost local commit `cc89729`
   (`10565eea…`, never pushed) was recreated from its diff as `b641400` on
   `arena/a0c40056-chompi` and opened as **PR #3** (base `main`): ten files byte-identical to
   `cc89729`'s tree (blob hashes match the diff's `index` lines), `chompi_move.cpp` re-based onto
@@ -22,7 +22,8 @@
   "everything works as it should". P27 has nothing left owed. (`RECOVER-P27.md`, `DEVICE-RECIPE.md` and `p27-recovery/` died with the old sandbox;
   this file and the repo are what survived.)
 - The old session branch `arena/237e5843-chompi` sits at `88f954e`, whose content is already inside
-  `main`. Base new work on `main`.
+  `main`. This session's branch `arena/a0c40056-chompi` is fully merged as of `95d6990` and stays
+  the session's working branch. Base new work on `main`.
 
 ## P27 — the keybed reads the note
 
