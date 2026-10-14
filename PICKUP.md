@@ -17,7 +17,9 @@
   stash (blob `97ca7b5`, one stray `+` the chat paste had added) -- **all eleven files are now
   byte-identical to `cc89729`'s tree; the recovery is exact.** Host suite green in the recovery
   sandbox; against the pre-patch build the new `keybed_octave_probe` fails 14 checks with the old
-  table's signature (pad 80 at 312.0 Hz where 441.0 was due). **Remaining: the device pass.** (`RECOVER-P27.md`, `DEVICE-RECIPE.md` and `p27-recovery/` died with the old sandbox;
+  table's signature (pad 80 at 312.0 Hz where 441.0 was due). **Device pass 2026-10-14: green** --
+  gates 1/1 on the Mac build, every probe green on the Move, and the by-ear pass done: the owner,
+  "everything works as it should". P27 has nothing left owed. (`RECOVER-P27.md`, `DEVICE-RECIPE.md` and `p27-recovery/` died with the old sandbox;
   this file and the repo are what survived.)
 - The old session branch `arena/237e5843-chompi` sits at `88f954e`, whose content is already inside
   `main`. Base new work on `main`.
@@ -34,8 +36,8 @@ key, and that press renumbers it.
 
 ## Next, in order
 
-1. **The device pass for P27** — §1 build + the two `grep -c` gates, §2 `keybed_octave_probe` on
-   the Move, §3 the by-ear pass = `TESTING.md` §3 item 1. This closes P23's keybed check.
+1. ~~**The device pass for P27**~~ — **done 2026-10-14** (see Device checks owed). P23's keybed
+   check closed with it. **Next up: item 2.**
 2. **The window's direction** (slice 2): END below START runs the tape backwards through the span,
    the flip gliding through zero (their 0.35 s), kept in its own field so the read-back cannot
    report a direction nobody selected. Today a crossed pair is only the span, played forwards.
@@ -46,9 +48,18 @@ key, and that press renumbers it.
 
 ## Device checks owed
 
-1. The keybed (P27) — the probe run + by-ear, as above.
-2. The reshaped Looper page, by eye: `REC LOPLAY LOOPIT DUGAIN STRT END CLLOOP`.
-3. The Mac `make check-hierarchy` for `a7e0e3c` — never reported back.
+1. ~~The keybed (P27)~~ — **done 2026-10-14.** On the Mac, the gates: `grep -c "Loop End"
+   build/module/dsp.so` = 1, `grep -c "the tape playhead" build/aarch64/looper_probe` = 1. On the
+   Move: `serve_params` 3458 B / 34 entries and `ui_hierarchy` 1760 B; `hierarchy_probe` PASS
+   (0 failures, 34 served / 32 named); `key_probe` peak=1211 over 689 blocks,
+   `jammi/0:000000000000001-`; `state_roundtrip` OK; **`keybed_octave_probe` PASS (0 failed)** —
+   32 pads at rest, Move-octave ±12, octave knob ±2, cubbi/bank/slot pinned, all three
+   `_double` states, 220.5 / 441.0 / 1321.5 Hz, the desktop bench's numbers. By ear: "everything
+   works as it should."
+2. ~~The reshaped Looper page, by eye~~ — **done 2026-10-14**: reads
+   `REC LOPLAY LOOPIT DUGAIN STRT END CLLOOP`.
+3. The Mac `make check-hierarchy` for `a7e0e3c` — never reported back. (The same documents now
+   also passed on the Move 2026-10-14, but the Mac host run remains the one owed.)
 
 ## Notes for later
 
