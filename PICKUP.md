@@ -13,11 +13,11 @@
   (`10565eea…`, never pushed) was recreated from its diff as `b641400` on
   `arena/a0c40056-chompi` and opened as **PR #3** (base `main`): ten files byte-identical to
   `cc89729`'s tree (blob hashes match the diff's `index` lines), `chompi_move.cpp` re-based onto
-  `main` and byte-identical too; `VENDORED.md` carries the diff exactly as given and is the one
-  file that cannot match (an intermediate lost edit had also touched it). Host suite green in the
-  recovery sandbox; against the pre-patch build the new `keybed_octave_probe` fails 14 checks with
-  the old table's signature (pad 80 at 312.0 Hz where 441.0 was due). **Remaining: the device
-  pass.** (`RECOVER-P27.md`, `DEVICE-RECIPE.md` and `p27-recovery/` died with the old sandbox;
+  `main` and byte-identical too; `VENDORED.md` completed 2026-10-14 from the owner's surviving
+  stash (blob `97ca7b5`, one stray `+` the chat paste had added) -- **all eleven files are now
+  byte-identical to `cc89729`'s tree; the recovery is exact.** Host suite green in the recovery
+  sandbox; against the pre-patch build the new `keybed_octave_probe` fails 14 checks with the old
+  table's signature (pad 80 at 312.0 Hz where 441.0 was due). **Remaining: the device pass.** (`RECOVER-P27.md`, `DEVICE-RECIPE.md` and `p27-recovery/` died with the old sandbox;
   this file and the repo are what survived.)
 - The old session branch `arena/237e5843-chompi` sits at `88f954e`, whose content is already inside
   `main`. Base new work on `main`.
