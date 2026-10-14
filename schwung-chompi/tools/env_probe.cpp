@@ -228,7 +228,7 @@ static void measure(const char* label, double* fade_in, double* release_s)
  * CUBBI checks below use are two octave roots of the keybed: the bottom-left C,
  * which plays whatever `slot` selects, and the C twelve pads up, which plays the
  * NEXT slot. (These used to be MIDI 48 and 50, one key per slot; those notes are
- * not pads at all and now take the chromatic fallback.) */
+ * not pads at all, and PORT PATCH P27 puts every note on the same ladder.) */
 static const int kPadOfSelectedSlot = 68; /* bottom-left pad, the octave root */
 static const int kPadOfNextSlot     = 80; /* the C twelve pads up           */
 
@@ -265,11 +265,11 @@ struct Reading
     double early, mid, held, peak, tail;
 };
 
-/* PORT PATCH P22: pad 68 is an octave below JAMMI's root (pad 80), so it is
- * the 0.5x this probe's file-length arithmetic was written for ("C3 at 0.5x,
- * the 0.30 s file runs out around 0.70 s"). MIDI 48 is not a pad; on the
- * chromatic ladder it lands 32 semitones down and the file is still playing
- * when the one-shot window looks. In CUBBI the same pad is slot 1's own speed. */
+/* PORT PATCH P22/P27: pad 68 is an octave below the keybed's root (pad 80), so
+ * it is the 0.5x this probe's file-length arithmetic was written for ("C3 at
+ * 0.5x, the 0.30 s file runs out around 0.70 s"). MIDI 48 is not a pad; on the
+ * ladder it lands 32 semitones down and the file is still playing when the
+ * one-shot window looks. In CUBBI the same pad is slot 1's own speed. */
 static int kReadingNote = 68;
 
 /* Is any voice still making sound? Reads the engine's own per-voice state. */

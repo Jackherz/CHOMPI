@@ -11,10 +11,12 @@
  *
  *   CHOMPI                       Move / Schwung
  *   ---------------------------------------------------------------------
- *   25-key chromatic keyboard    the 32 pads, as a piano (module/dsp
+ *   25-key chromatic keyboard    the 32 pads, as a keyboard (module/dsp/
  *                                chompi_move.cpp keybed). The host delivers
- *                                pads as MIDI 68..99; this module turns the
- *                                pad into a piano pitch. One sample, every pad.
+ *                                pads as notes, four rows of eight; this
+ *                                module reads the note as a pitch, one
+ *                                semitone a pad, twelve pads to an octave.
+ *                                One sample, every pad, no two on one pitch.
  *   encoders 1..6                chain_params (set_param) driven by the
  *                                shadow UI knobs, see ui_hierarchy JSON
  *   KEY_26 record / KEY_27 play  set_param looper_record / looper_play
@@ -61,38 +63,51 @@
 
 /* ---- the keybed on the 32 pads -------------------------------------------
  *
- * PORT PATCH P22, simplified.
+ * PORT PATCH P22, simplified — and P27, which made the pitch read off the
+ * NOTE.
  *
  * One sample. Every pad plays it, higher or lower by which pad is pressed.
  * There is no slot knob and no second sample on the keybed: JAMMI, CUBBI and
  * bank are engine bookkeeping for where a file is named, and they are pinned
  * so none of them can put a different file under a pad.
  *
- * Move's 32 pads arrive as MIDI 68..99, four rows of eight, the bottom row
- * first. The host's pad_layout stays "chromatic" so those note numbers do not
- * move; this table is what turns a pad into a piano pitch. A note that is not
- * a pad (a MIDI keyboard) is read from middle C (note 60 = the sample's own
- * speed), so a keyboard and the pads agree on what 1.00x means.
+ * Move's pads arrive as notes, four rows of eight, the bottom row first, and
+ * the keybed is a CHROMATIC LADDER: every pad one semitone above the pad
+ * before it, twelve pads to an octave, no two pads on the same pitch — the way
+ * a keyboard is laid out, and the way the hardware's 25 keys are.
  *
- * The surface is a piano, not a chromatic ladder and not a piano with silent
- * gaps:
+ *   row 1 (68..75)   -12 -11 -10  -9  -8  -7  -6  -5
+ *   row 2 (76..83)    -4  -3  -2  -1   0  +1  +2  +3
+ *   row 3 (84..91)    +4  +5  +6  +7  +8  +9 +10 +11
+ *   row 4 (92..99)   +12 +13 +14 +15 +16 +17 +18 +19
  *
- *   row 1 (68..75)   C  D  E  F  G  A  B  C     white keys
- *   row 2 (76..83)   ·  C# D# ·  F# G# A# ·     black keys, one column right
- *   row 3 (84..91)   C  D  E  F  G  A  B  C
- *   row 4 (92..99)   ·  C# D# ·  F# G# A# ·
+ * Pitches are semitones from the sample's own speed, which is the pad twelve
+ * up from the bottom left (pad 80). The surface reaches 0.50x below it and
+ * 3.00x above: the tape's whole speed range, in both directions. The `octave`
+ * knob transposes the whole keybed, an octave a step, on top of that.
  *
- * C# sits above D, the way a grid has to place a key that lives between two
- * whites. The three columns a piano leaves empty (above C, above F, and above
- * the octave C) are not silent: each plays the white key below it, one octave
- * higher. The `octave` knob transposes the whole keybed, one octave a step.
+ * THE PITCH IS THE NOTE MINUS THE ROOT — there is no per-pad table, and that
+ * is the point of the shape. The pads' note numbers are Move's, and they
+ * MOVE: Move's octave buttons shift all 32 by twelve, its transpose shifts
+ * them by semitones. An index into a 32-entry table would fold every shifted
+ * note back onto pitches the unshifted pads already have — the same pitch from
+ * several pads, and the top of the shifted surface read as some other, wilder
+ * key entirely. Reading the note instead keeps every pad exactly one semitone
+ * from its neighbour, moves the whole keyboard by exactly what moved, and
+ * leaves no two pads on one pitch (PORT PATCH P27).
  *
- * Pitches are semitones from the sample's own speed. That speed is the C that
- * ends the lower white row and starts the upper one (pads 75 and 84).
+ * A note that is not one of the 32 pads is the same ladder, so a MIDI keyboard
+ * plays the keybed, note 80 being the sample's own speed.
  */
 static const int kMovePadLow   = 68; /* bottom-left pad */
 static const int kMovePadCount = 32; /* MIDI 68..99 */
-static const int kKeyboardRoot = 60; /* middle C on a keyboard: the same 1.00x */
+static_assert(kMovePadLow + kMovePadCount - 1 == 99, "the 32 pads are MIDI 68..99");
+
+/* The pad the sample plays at its own speed on: twelve pads up from the bottom
+ * left, so the surface reaches a twelfth below it (0.50x) and nineteen
+ * semitones above (3.00x). Chosen for those two ends rather than for the pad's
+ * place in a grid, because they are the tape's own limits. */
+static const int kKeybedRoot = kMovePadLow + 12;
 
 /* The one file the keybed plays. The engine still names files by mode, bank
  * and slot; the instrument does not. Every pad and every assignment uses this. */
@@ -100,21 +115,11 @@ static const int kOneMode = 0; /* JAMMI */
 static const int kOneBank = 0;
 static const int kOneSlot = 1;
 
-static constexpr signed char kPadPitch[kMovePadCount] = {
-    -12, -10, -8, -7, -5, -3, -1,  0, /* C3 D3 E3 F3 G3 A3 B3 C4 */
-      0, -11, -9,  5, -6, -4, -2, 12, /* C4 C#3 D#3 F4 F#3 G#3 A#3 C5 */
-      0,   2,  4,  5,  7,  9, 11, 12, /* C4 D4 E4 F4 G4 A4 B4 C5 */
-     12,   1,  3, 17,  6,  8, 10, 24, /* C5 C#4 D#4 F5 F#4 G#4 A#4 C6 */
-};
-static_assert(sizeof(kPadPitch) == kMovePadCount, "one pitch per pad");
-
-/** Semitones from the sample's own speed. Pads use the piano table; any other
- *  note is a keyboard, middle C at 1.00x. */
+/** Semitones from the sample's own speed. One ladder for every note, so the
+ *  pads and a MIDI keyboard land on the same pitches. */
 static int keybed_pitch(int note)
 {
-    if(note >= kMovePadLow && note < kMovePadLow + kMovePadCount)
-        return (int)kPadPitch[note - kMovePadLow];
-    return note - kKeyboardRoot;
+    return note - kKeybedRoot;
 }
 
 /* chompi::g_sample_dir (the runtime sample directory) is defined in
@@ -1192,10 +1197,14 @@ static void v2_on_midi(void* instance, const uint8_t* msg, int len, int source)
            || (int)e.SelectedSlot() != kOneSlot)
             hold_one_sample(inst);
 
-        /* One sample, pitched by the pad. slot_hint 0: JAMMI's key path plays
-         * voice_slot_ (pinned to kOneSlot) and turns this semitone count into
-         * a playback ratio. The identity is the note the host sent, unique per
-         * pad, so a release still finds the voice if the octave knob moved. */
+        /* One sample, pitched by the pad's own note (keybed_pitch). slot_hint 0:
+         * JAMMI's key path plays voice_slot_ (pinned to kOneSlot) and turns
+         * this semitone count into a playback ratio. The identity is the note
+         * the host sent, unique per pad, so a release finds the voice again
+         * even after the `octave` knob moved — the knob is ours and leaves the
+         * note alone. (Move's octave buttons are not ours and move the note
+         * itself: a pad HELD across that press releases on the new number, so
+         * it cannot find the voice it started. The note is the key.) */
         const int pitch = keybed_pitch((int)d1) + 12 * inst->octave.load();
 
         e.request_fifo.PushBack(daisy::KeyRequest(daisy::KeyRequest::Type::START,
@@ -1238,10 +1247,11 @@ static int v2_get_param(void* instance, const char* key, char* buf, int buf_len)
         /* A sound generator's hierarchy must be served here — the chain host
          * never reads module.json for one.
          *
-         * pad_layout stays "chromatic" so the host delivers pads as MIDI 68..99
-         * in order. The piano is this module's map (keybed_pitch), not the
-         * host's: "drums" would reseat the pads, and there is no "piano" value
-         * the host understands. */
+         * pad_layout stays "chromatic" so the host delivers pads as notes in
+         * order (MIDI 68..99 at rest) and does not reseat them into a shape of
+         * its own. The keybed is this module's map (keybed_pitch) and it reads
+         * the note, so anything the host or Move does to those note numbers —
+         * an octave, a transpose — moves the whole keyboard with them. */
         const size_t prefix = (size_t)snprintf(buf, (size_t)buf_len,
                                               "{\"pad_layout\":\"chromatic\"");
         if(prefix + 1 >= (size_t)buf_len)

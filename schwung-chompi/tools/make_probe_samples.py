@@ -20,7 +20,10 @@ TONES = {
     "cubbi_a1.wav": 440, "cubbi_a2.wav": 480, "cubbi_a3.wav": 520,
     "cubbi_a4.wav": 560, "cubbi_a5.wav": 600,
     "cubbi_b1.wav": 640, "cubbi_b2.wav": 680,
-    "jammi_a1.wav": 840, "jammi_a2.wav": 880, "jammi_a3.wav": 920,
+    # jammi_a1 is the card's own tone: C4, 261.63 Hz. The 840 that used to be
+    # here was never in the file, and mode_bank_probe's reference was made from
+    # it -- see the note on `one` in mode_bank_probe.cpp.
+    "jammi_a1.wav": 261.63, "jammi_a2.wav": 880, "jammi_a3.wav": 920,
     "jammi_b1.wav": 1000,
 }
 

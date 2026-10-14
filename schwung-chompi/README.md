@@ -107,10 +107,10 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 
 | CHOMPI | Move / Schwung |
 | --- | --- |
-| 15 keys (C3–C5) | the 32 pads, as a piano. One sample, every pad (see below) |
+| 25-key chromatic keyboard (C3–C5) | the 32 pads, as a keyboard: a chromatic ladder, one semitone a pad, no two pads on one pitch. One sample, every pad (see below) |
 | velocity-sensitive key press | note-on velocity → key request |
 | 8 knobs | `chain_params` — the on-screen controls, paged by the shadow UI |
-| pitch/speed fader | `varspeed`, `looper_pitch` / `looper_reverse` (one number: the loop's speed, with a negative value playing it backwards, so the two cells follow each other), and `looper_scrub` — the wheel that nudges the tape while the looper is stopped (`looper_scrub` is the knob's POSITION; the engine gets the turn, VENDORED P24). All of them read back the number they were set to — the host repaints `get_param` when a knob is released — and a `Clear Loop` returns them to 1.00x, forward, no nudge |
+| pitch/speed fader | `varspeed`, and `looper_pitch` / `looper_reverse` (one number: the loop's speed, with a negative value playing it backwards, so the two cells follow each other). The Looper page's `Loop Pitch` also carries the reverse: a negative value is the tape turning around. `looper_scrub` — the tape playhead — is still served but no longer drawn (the window's bounds took its job; VENDORED P25). All of them read back the number they were set to — the host repaints `get_param` when a knob is released — and a `Clear Loop` returns them to 1.00×, forward |
 | loop start/end trimmers | `start`, `end` (sample start/end, 0–1) |
 | reverse / sustain / autoloop switches | `reverse`, `sustain`, `auto_loop` |
 | rec / play buttons | `looper_record` (the cell reads `rec` while a pass runs, `lorec` when idle), `looper_play`, `record` |
@@ -119,7 +119,7 @@ locally instead (for the probes). The engine scans slots 1–14 across banks a�
 | FX before or after the looper | `fx_pre_loop` — the Setup page's `FX Route`: `pre` / `post` |
 | audio in + monitor switch | `input_monitor`, `input_gain`, `input_source` |
 | SD-card slot files | `samples/cubbi_aN.wav` / `jammi_aN.wav` on the Move's FS |
-| load a sample onto a key | the **Samples** level: pick `slot`, then `sample_file` opens the host's browser at the portal (`Built-in` = the card, `User Library` = yours) — one slot is one octave of the keybed, so the sample you pick plays across 12 keys |
+| load a sample onto a key | the **Samples** level: `sample_file` opens the host's browser at the portal (`Built-in` = the card, `User Library` = yours) — what you pick replaces the one sample the keybed plays, across all 32 pads |
 | (no CHOMPI equivalent) | `start` / `end` are `wav_position`s: the host draws the assigned file's waveform on the pads |
 
 The shadow UI gets its page layout from `get_param("ui_hierarchy")` (levels
@@ -143,22 +143,31 @@ file it holds; this is the reading to ask for when a voice goes quiet),
 plus `vu_in` / `vu_out` (envelope followers). All are in-memory reads — safe
 to poll.
 
-### One sample, on a piano
+### One sample, on a keyboard
 
-The pads are a piano. Bottom-left is MIDI 68. Black pads are the sharps, one
-column to the right of the white they split. Every pad sounds:
+The pads are a keyboard. Bottom-left is MIDI 68, and every pad is one semitone
+above the pad before it — left to right, bottom row first. Thirty-two pads,
+thirty-two pitches, no two of them the same:
 
 ```
-row 1   C   D   E   F   G   A   B   C
-row 2   ·   C#  D#  ·   F#  G#  A#  ·
-row 3   C   D   E   F   G   A   B   C
-row 4   ·   C#  D#  ·   F#  G#  A#  ·
+row 1 (68..75)   -12 -11 -10  -9  -8  -7  -6  -5
+row 2 (76..83)    -4  -3  -2  -1   0  +1  +2  +3
+row 3 (84..91)    +4  +5  +6  +7  +8  +9 +10 +11
+row 4 (92..99)   +12 +13 +14 +15 +16 +17 +18 +19
 ```
 
-The dot pads are where a piano has no key. They are not silent: each plays the
-white key below it, one octave higher. The C at the end of row 1 (pad 75) and
-the C at the start of row 3 (pad 84) play the sample at its own speed. The
-`octave` knob transposes the whole keyboard, one octave a step.
+The numbers are semitones from the sample's own speed, which is pad 80. The
+bottom-left pad is 0.50× and the top-right one is 3.00× — the tape's whole
+speed range, one semitone a step. The `octave` knob transposes the whole
+keyboard, one octave a step.
+
+The pitch is the NOTE minus the root, not an index into a table of pads, and
+that is what makes the keybed follow the note: Move's octave buttons shift all
+32 pads by twelve, its transpose shifts them by semitones, and the whole
+keyboard moves with them, every pad still exactly one semitone from its
+neighbour (PORT PATCH P27). A fixed table would fold the shifted pads back onto
+pitches the unshifted ones already play — the same note from several pads — and
+read the pads that ran off the end of it as some other key entirely.
 
 There is one sample. `sample_file` is a `filepath` param: the host opens
 its browser, and with `live_preview` set, jogging through the list assigns as
@@ -216,34 +225,33 @@ the knobs).
 
 Two things worth knowing:
 
-* **`pad_layout` is served as `"chromatic"`**: both voice modes put a keyboard
-  on the pads now (CUBBI one slot per octave, JAMMI one sample across them), so
-  the surface is declared as the keyboard it is. MODULES.md is explicit that an absent
-  `pad_layout` is not the same as `"chromatic"`, and a sound generator's
+* **`pad_layout` is served as `"chromatic"`**: the pads are a keyboard, so the
+  surface is declared as the keyboard it is. MODULES.md is explicit that an
+  absent `pad_layout` is not the same as `"chromatic"`, and a sound generator's
   `module.json` hierarchy is never read — the plugin has to serve it.
-* **No MIDI notes are declared.** Notes arrive where they arrive; the pads are a
-  chromatic ladder (`keybed_position()` / `keybed_slot()` in `chompi_move.cpp`,
-  twelve pads to a slot), and a note that is not one of the 32 pads continues the
-  same ladder, so a MIDI keyboard plays it too.
+* **No MIDI notes are declared.** Notes arrive where they arrive; the keybed
+  reads the note itself (`keybed_pitch()` in `chompi_move.cpp`: the note minus
+  the root, pad 80), and a note that is not one of the 32 pads continues the
+  same ladder — so a MIDI keyboard, Move's octave buttons and its transpose all
+  move the whole keyboard with the notes they send.
 
-### Mode, bank and slot
+### One file, one keybed
 
-The **Setup** page carries the three knobs the hardware has:
+**One sample.** `voice_mode`, `bank` and `slot` are still served, and the engine
+still names files by them — the keybed plays the assigned file, or the shipped
+`jammi_a1` (bank a, slot 1) when nothing is assigned — but they are pinned:
+writing any of the three cannot put a second file under a pad, which
+`tools/mode_bank_probe` measures as a frequency on three pads.
 
-| knob | what it does |
-| --- | --- |
-| `voice_mode` | **JAMMI** — one sample for the whole keybed, played at the pad's distance from pad 80: the original tape behaviour. **CUBBI** — one slot per OCTAVE of the keybed, so two whole samples and part of a third are on the pads at once. |
-| `bank` | which set of samples that mode plays: 0–4, i.e. a–e on the card. The card set fills a, b and c. |
-| `slot` | which slot 1–14 is selected (15 is the recording buffer). In CUBBI it is the slot the pads' FIRST TWELVE keys play, and the twelve above them are the next slot up; the Samples page assigns to it. In JAMMI it is the sample the whole keybed plays. |
-| `octave` | transposes the whole keybed, one octave per step, in both modes. |
+An old Set that names a mode, bank or slot still restores (`state` carries all
+three) and the values stay readable/writable; neither is drawn. The **Setup**
+page carries `octave` — the whole keybed transposed, one octave a step — and
+`fx_pre_loop`. `debug_files` lists what the card holds.
 
-**Selecting a slot never cuts off what is playing.** The new sample is bound on
-the next key press: one file open per change, instead of a burst of opens while
-a knob is being swept, which is what used to wedge a reader and leave the module
-silent until it was reloaded (VENDORED P14/P17). In JAMMI, move `slot` or `bank`
-and press any key to hear the sample you picked; in CUBBI, move `slot` and the
-first twelve pads play the sample you picked, the next twelve the slot above
-it.
+**A change is bound on the next key press**, not while a note is playing: one
+file open per change, instead of a burst of opens while a knob is being swept,
+which is what used to wedge a reader and leave the module silent until it was
+reloaded (VENDORED P14/P17).
 
 **Pitch comes from the key, not from a companion file.** Above 1.5× the engine
 wants a `<name>_double.wav` next to the sample — the card ships one for every
@@ -332,8 +340,9 @@ make host && make tools
 #   looper_probe      record, play and clear a loop; the dub gain's per-pass
 #                     law (1 keeps, 0.5 halves, 0 erases); the record cell's
 #                     live state; and where the FX sit
-#   keybed_octave_probe  one slot = one octave of the pads: every pad's
-#                     slot and pitch, the octave knob, and the >1.5x case
+#   keybed_octave_probe  the keybed is a keyboard: all 32 pads' pitches, the
+#                     octave shifts (Move's and the module's), one sample on
+#                     the pads, and the >1.5x companion
 for p in sample_map_probe slot_knob_probe unload_probe mode_bank_probe looper_probe \
          keybed_octave_probe; do
     g++ -std=c++17 -O1 -D_Static_assert=static_assert \
@@ -345,7 +354,7 @@ python3 tools/make_probe_samples.py /tmp/fullmod/samples  # tone-labelled set
 /tmp/unload_probe     build/chompi_move.so .
 /tmp/mode_bank_probe  build/chompi_move.so /tmp/fullmod
 /tmp/looper_probe     build/chompi_move.so /tmp/fullmod
-mkdir -p /tmp/kboct/samples && cp build/chompi_move.so /tmp/kboct/
+mkdir -p /tmp/kboct && cp build/chompi_move.so /tmp/kboct/
 (cd /tmp/kboct && /tmp/keybed_octave_probe ./chompi_move.so .)
 ```
 
@@ -372,11 +381,11 @@ and `make render` is the smoke test.
 | Fast playing under load, audio in | not yet tested |
 | Sample import (browser, assignment, waveform trim) | offline-verified (`tools/sample_map_probe`, `tools/sample_format_probe`), not yet on device |
 | Mode / bank / slot, loop clear, FX routing | offline-verified (`tools/mode_bank_probe`, `tools/looper_probe`), not yet on device |
-| One slot = one octave on the pads | offline-verified (`tools/keybed_octave_probe`), not yet on device |
+| The keybed as a keyboard (32 pitches, octave shifts, one sample) | offline-verified (`tools/keybed_octave_probe`), not yet on device |
 
 The device check that passed: the aarch64 build dlopens on the Move, serves
-`chain_params` (2127 B / 31 entries when that check ran — 2826 B / 35 entries
-today), `ui_hierarchy` (1352 B then, 6 levels — 1934 B today, plus
+`chain_params` (2127 B / 31 entries when that check ran — 3458 B / 34 entries
+today), `ui_hierarchy` (1352 B then, 6 levels — 1760 B today, plus
 `pad_layout`), `state` (16 keys then, 17 today), finds the slot files on the
 Move's filesystem (`cubbi/0:110000000000001-`) and streams a CUBBI sample off
 disk into the render block — `peak=4729` over 2 s, i.e. the sample played, and

@@ -37,9 +37,12 @@ Each patch carries its label as a `PORT PATCH Pn` comment at the site.
 | P19 | `chompi_port.h/.cpp` + `DSPEngine.h` | per-(mode, bank, slot) values in the port's own store (`samples/slots.values`), loaded on the engine's key path instead of the hardware's preset store, so the Tape page follows the slot |
 | P20 | `DSPEngine.h` | a CUBBI key press no longer calls `SetVoiceSlot()` — one voice, opened once, and a slot with no file no longer takes the whole keybed silent |
 | P21 | `port/sample_view.h/.cpp` + `compat/chompi_platform.cpp` | a file-byte-addressed converter in front of the engine's `f_read`: WAV at any rate/bit depth and AIFF/AIFC in, canonical 16-bit stereo out; the plain RIFF case keeps the raw fast path |
-| P22 | `SampleReader.h`, `DSPEngine.h`, `chompi_port.h/.cpp`, `chompi_move.cpp` | one slot = one octave of the keybed: the pads are a chromatic ladder, a pad's octave picks the slot and its distance from that octave's C sets the pitch, and a sample with no `_double` companion keeps its own pitch above 1.5× (see below) |
+| P22 | `SampleReader.h`, `DSPEngine.h`, `chompi_port.h/.cpp`, `chompi_move.cpp` | one slot = one octave of the keybed: the pads are a chromatic ladder and every pad sounds, a pad's octave picks the slot (`KeyRequest::slot_hint_`), and a sample with no `_double` companion keeps its own pitch above 1.5× (see below). P27 later moved the pitch itself onto the note |
 | P23 | `SampleReader.h` | a 2x companion must be a *different*, non-empty file: the reader verifies it on disk at the moment the open would use it, and a companion that lands empty is dropped in favour of the sample (see below) |
 | P24 | `LooperEngine.h`, `DSPEngine.h` | one press is one toggle: the port's record cell is a two-state control, and a write to it is measured against the pass that is RUNNING or still REQUESTED (`WantsRecord()`), so a repeated write cannot stop the take it just started (see below) |
+| P25 | `chompi_move.cpp`, `LooperEngine.h`, `DSPEngine.h` | `looper_scrub` is a tape PLAYHEAD, not the hardware's scrub wheel: the write is a turn against the value last handed the host, `get_param` answers the head's position, and `MoveLooperHead()` moves the read head at once — playing or parked (see below) |
+| P26 | `Sampler.h`, `LooperEngine.h`, `DSPEngine.h`, `chompi_move.cpp` | the tape has a window: `looper_start` / `looper_end` (the cells `Loop Start` / `Loop End`) are fractions of the take, derived per block into the read head's bounds, and the head turns over between them instead of at the ends of the whole take (see below) |
+| P27 | `chompi_move.cpp` | the keybed's pitch is the NOTE minus the root (pad 80), not an index into a table of pads: every pad one semitone from the next, no two pads on one pitch, and Move's octave and transpose buttons move the whole keyboard with the notes they send (see below) |
 
 P4's call sites are the three places the engine names a file of its own —
 `DSPEngine.h:606` (`temp_rec.wav`), `DSPEngine.h:1355` (slot files
@@ -246,21 +249,22 @@ sample assigned to slot 1 that no pad could play.
 So a slot became an OCTAVE, which is also how the reference implementation
 (`schwung-munchi-tape`) lays its pads out:
 
-* `keybed_position()` / `keybed_slot()` lay a chromatic ladder on the 4×8 grid:
-  pad 68 is the C the selected slot starts on, the pads count up by semitone
-  left to right and bottom to top, and every pad sounds. Notes that are not pads
-  (a MIDI keyboard, or a host transpose) continue the same ladder.
+* The pads are a chromatic ladder on the 4×8 grid: pad 68 is the C the selected
+  slot starts on, the pads count up by semitone left to right and bottom to top,
+  and every pad sounds. Notes that are not pads (a MIDI keyboard, or a host
+  transpose) continue the same ladder.
 * Twelve pads are a slot, so the `slot` knob owns pads 68–79, pads 80–91 are
-  the next slot up and 92–99 the first eight of the one after that
-  (`keybed_slot()`), which is why the same pad can play a different slot after
-  the knob moves — hence the slot test added to the CUBBI bind condition, and
-  hence `KeyRequest::slot_hint_`: the port resolves the slot, the engine no
-  longer assumes `KeyToSlot(key)` when a hint is present.
+  the next slot up and 92–99 the first eight of the one after that, which is why
+  the same pad can play a different slot after the knob moves — hence the slot
+  test added to the CUBBI bind condition, and hence `KeyRequest::slot_hint_`:
+  the port resolves the slot, the engine no longer assumes `KeyToSlot(key)` when
+  a hint is present.
 * Inside an octave the pad is the pitch (0..11 semitones, 0 at the octave's C),
-  fed through the engine's existing `MidiNoteToPlaybackRatio()`. JAMMI keeps its
-  whole-keybed pitch, measured from pad 80 (twelve pads up, the C the second
-  octave of the surface starts on) at 1.0×, which is also the pad a slot's
-  octave starts on — so pad 80 is a C and a 1.00× in both voices.
+  fed through the engine's existing `MidiNoteToPlaybackRatio()`, and JAMMI keeps
+  its whole-keybed pitch, measured from pad 80 (twelve pads up) at 1.0× — so pad
+  80 is a C and a 1.00× in both voices. P27 replaced both of those readings with
+  one rule read off the note; the ladder, and pad 80 as its root, are what
+  survived.
 
 The layout the user chose is deliberately NOT the reference's: Munchi Tape puts
 a two-octave piano on the same 4×8 grid, and a piano needs pads for keys that
@@ -291,9 +295,10 @@ ending in silence:
 * **An assigned sample has no companion, and its own name for one.**
   `SlotSamplePath()` returns the slot override for `dbl = false` *and*
   `dbl = true`, so the engine asked for the sample as its own companion, opened
-  it, and read it at half rate: a user's sample played an octave low. `tools/
-  keybed_octave_probe` measured it as 882 Hz where 1764 was due (and 441 where
-  882), with the voice holding the original file at the halved rate.
+  it, and read it at half rate: a user's sample played an octave low (the probe
+  of the time measured 882 Hz where 1764 was due). `tools/keybed_octave_probe`
+  covers the state directly now: its 3.00× pad plays 1321.5 Hz, and would read
+  an octave low if the sample were opened as its own companion.
 * **A missing companion looks present.** The port's FatFS-compatible `f_open`
   creates a 0-byte placeholder for a name that is not there (the shipped
   firmware relies on that behaviour for its own sample directory), so the
@@ -318,11 +323,12 @@ The reader now decides where the decision is used, in `OpenFile()`:
   next sample on, and re-opens the sample. `FileOpenFailed()` does the same for
   a companion that will not open at all.
 
-Measured after the patch: the keybed's octave checks are 1764/882 Hz again,
-`slot_knob_probe` passes on a tree with no companions and leaves no 0-byte
-`_double` behind, and a burst of pads 88–99 that used to end at `rms=0.0000`
-(five presses later still silent) now ends at 0.0196 with the next press at
-0.0205.
+Measured after the patch: the keybed's octave checks were 1764/882 Hz again on
+the probe of the time (today's probe reads the ladder instead — its
+`a 0-byte companion is dropped` check is this state), `slot_knob_probe` passes
+on a tree with no companions and leaves no 0-byte `_double` behind, and a burst
+of pads 88–99 that used to end at `rms=0.0000` (five presses later still silent)
+now ends at 0.0196 with the next press at 0.0205.
 
 ### P24 in detail
 
@@ -353,12 +359,101 @@ stops snapping home) and sends only the DIFFERENCE to the engine, whose
 `FileSampler::SetScrub(addl)` accumulates the hardware wheel's turns
 (`turn_count_ += addl`) and turns them into a rate every 1/8 s. Passing the
 absolute position in re-applied the whole value on every detent, so the tape
-crept away instead of following the wheel.
+crept away instead of following the wheel. (P25 moved the port's knob onto the
+read head and left `SetScrub` to the hardware wheel alone.)
 
 Measured by `tools/looper_probe` on a continuous take (so the read head's
-position is unambiguous): a turn of +2.0 moves the tape 0.4617 -> 0.5157, the
-same position written again moves it 0.0025 (the tail of the first turn's slew),
-and `looper_scrub` reads back `2.0000`.
+position is unambiguous): a turn of +2.0 moved the tape 0.4617 -> 0.5157, the
+same position written again moved it 0.0025 (the tail of the first turn's slew),
+and `looper_scrub` read back `2.0000`. P25 below is where the knob's meaning
+changed from a rate nudge to a move of the head; the probe's numbers there are
+the current ones.
+
+### P25 in detail
+
+The knob that moves the tape, not the wheel that nudges it.
+
+`looper_scrub` used to hand the engine the knob's difference and let
+`FileSampler::SetScrub` turn it into a speed for a while (P24). The user asked
+for a control that "moves to a different part of the loop in real time, like
+moving a tape playhead", so the knob is now exactly that: one unit of the knob
+is one pass of the loop, the write is a TURN (the difference from the value last
+handed the host), and the engine applies it as a move of the read head —
+`MoveLooperHead()`, at once while the loop plays, and a move of where the next
+play starts while it is parked.
+
+The turn is what is sent because the host writes ABSOLUTE values: it reads the
+cell, adds the turn, and writes the sum. `get_param("looper_scrub")` answers the
+head's own position (0..1 of the loop, `0.0000` when nothing is recorded), so
+the base the host adds to is where the head really is, and the knob cannot
+creep. The hardware's rate nudge (`FileSampler::SetScrub`, `turn_count_ +=
+addl`) is untouched in the engine and unused by this knob.
+
+Measured by `tools/looper_probe`: an empty loop has no playhead (`0.0000`); a
+parked turn puts the head where it was sent and the cell reads it (0.1933 ->
+0.2520, cell `0.2520`); and a turn while the loop plays moves the head at once
+(0.3134 -> 0.7500) instead of changing the speed it plays at.
+
+The knob is no longer on the Looper page — the window's two bounds took its job,
+and a negative Loop Pitch is the reverse control — but the key stays served so
+an existing Set still round-trips.
+
+### P26 in detail
+
+The tape has a window.
+
+Modelled on `kliegsablaze/forgetful` (see `LOOPER-MODEL.md` in the session's
+notes): the looper's two bounds are `looper_start` / `looper_end`, FRACTIONS of
+the take (0..1, step 0.01), named `Loop Start` / `Loop End` so the host draws
+them as bounds rather than as a playback cursor. `FileSampler` keeps them as
+written and derives the sample positions per block, keeping the pair even so a
+stereo pair stays a pair and with a floor (50 ms) so the window cannot be closed
+to nothing. The read head turns over between the bounds instead of at the ends
+of the whole take, and the take's edge fade follows the window's edges.
+
+The ORDER of the pair is enforced at use, never in the setter: a knob that snaps
+back under the hand reads as a broken control rather than as a limit. Today a
+crossed pair (End below Start) is the span between the two, played in the tape's
+direction; running the window BACKWARDS is the other half of the model and needs
+the direction glide that goes with it — a 0.35 s pass through zero, in its own
+state field.
+
+`tools/looper_probe` measures the window in LAPS of the take — whole tape 2
+laps, half the tape 4, a window past the tone 0 — because levels cannot tell a
+window from a tape; it also reads the pair back as written (0.6000 / 1.0000) and
+the crossed pair as written (0.6000 / 0.2000).
+
+### P27 in detail
+
+The keybed reads the note.
+
+One sample, every pad, a pitch per pad: P22 laid a chromatic ladder on the 4×8
+grid and took a pad's pitch from its place in the ladder, with a 32-entry table
+indexed by `note - 68`. The pads' note numbers are not the module's, though —
+Move's octave buttons shift all 32 by twelve and Move's transpose shifts them by
+semitones — so the table folded the shifted notes back onto pitches the
+unshifted pads already played, and the pads that ran off the end of it were read
+as some other key entirely. The user's words: "on a real keyboard there aren't
+any notes that play the same pitch."
+
+The rule is now the note itself — `keybed_pitch(note) = note - 80` — read from
+the pads and from anything else that sends notes, so every pad is exactly one
+semitone from its neighbour, no two pads share a pitch, and the whole keyboard
+moves by exactly what moved (Move's octave buttons, Move's transpose, and the
+module's own `octave` knob, which adds 12 semitones a step on top). Pad 80 is
+the sample at its own speed; pad 68 is 0.50× and pad 99 is 3.00×, the tape's
+whole speed range — which is why the root is pad 80 and not the bottom-left pad.
+
+The keybed is pinned to one file (JAMMI, bank 0, slot 1) so nothing else can put
+a second sample under a pad; mode, bank and slot stay served for old Sets and
+are no longer drawn. `tools/keybed_octave_probe` sweeps all 32 pads at rest, at
+++12 and at −12, checks the module's `octave` knob, checks that mode, bank and
+slot cannot change what plays, and checks the three `_double` states above 1.5×.
+
+Measured (44.1 kHz engine on a 48 kHz 480 Hz file, so 1.00× is 441 Hz): pad 68
+220.5, pad 80 441.0, pad 99 1321.5 — the same ladder at every shift. Against the
+build from before the patch, 29 / 30 / 31 of the 32 pads were on the wrong pitch
+at rest / +12 / −12 (pad 80 read 312.0 Hz where 441.0 was due).
 
 ## Warnings the compiler still reports (all benign)
 

@@ -94,13 +94,13 @@ make samples-full          # copies cubbi_* + jammi_* into samples/ (~161 MB)
 
 **Every card sample has a `_double` beside it** — the same audio at twice the
 speed (half the frames, an octave up), which the reader switches to above 1.5×
-so the top of a slot's octave is not read from a thinned-out copy. The three
+so the top of the keybed is not read from a thinned-out copy. The three
 bundled files have none, and the module must be fully playable without them:
 above 1.5× a pad then plays the one copy it has, at the right pitch, with the
-aliasing the double exists to avoid. Both states are covered offline
-(`tools/keybed_octave_probe` passes on a tree with no companions, with a real
-companion, and with a 0-byte one) and worth one listen each on the device —
-see step 3.1 and the P23 row in "What a failure looks like".
+aliasing the double exists to avoid. All three states are covered offline
+(`tools/keybed_octave_probe` writes no companion, a 0-byte one and a real one,
+and the pad's pitch is the same three times) and worth one listen each on the
+device — see step 3 and the P23 row in "What a failure looks like".
 
 ---
 
@@ -224,20 +224,25 @@ tried.
 
 In order, each step isolates one subsystem:
 
-1. **Sample playback**: one sample, every pad. The pads are a piano — white
-   keys on rows 1 and 3, black keys (the sharps) on rows 2 and 4, one column
-   to the right of the white they split. The C at the end of row 1 plays the
-   sample at its own speed. The three pads a piano leaves empty (above C,
-   above F, and above the octave C) are not silent: each plays the white key
-   below it, one octave higher. `octave` transposes the whole keyboard.
+1. **Sample playback**: one sample, every pad. The pads are a keyboard — a
+   chromatic ladder, one semitone a pad, left to right and bottom row first —
+   so any two neighbouring pads are a semitone apart and **no two pads play the
+   same note**. Pad 80 (row 2, fifth column) is the sample at its own speed;
+   the bottom-left pad is an octave below it, the top-right one 19 semitones
+   above. Play along a row: the pitch must rise a semitone a step, with nothing
+   repeating and nothing jumping an octave. Then Move's own **octave buttons**,
+   and the module's `octave` (Setup): the whole keyboard must move by what
+   moved — every pad a further twelve semitones, still one semitone from its
+   neighbour, still no repeats.
    Then the **top of the keybed**, where the sample is read above 1.5×: sweeps
-   of the top two rows and the top-gap pad must all *sound* (with a companion
+   of the top two rows must all *sound* at the ladder's pitch (with a companion
    file they are clean, without one they are a little aliased), and playing
    them must not leave a 0-byte `_double` file behind. On the device:
    `ssh ableton@move.local "ls -la …/chompi/samples/ | grep double"` before and
-   after — nothing may appear, and nothing already there may grow. Sliding
-   `slot` or `bank` across while pressing any key must keep the keybed alive
-   (P23's wedge was exactly this: silence that only a reload fixed).
+   after — nothing may appear, and nothing already there may grow.
+   Mode, bank and slot are pinned and cannot put a second file under a pad: an
+   old Set that names them still restores, and the keybed is the shipped sample
+   unless the Samples page has assigned one.
 2. **Streaming under a load spike**: hold several keys in a row and listen for
    dropouts. This is the untested bit — on real hardware the reads contend
    with whatever else touches the filesystem. If you hear clicks, the fix is
@@ -287,9 +292,9 @@ In order, each step isolates one subsystem:
    the window's edges offline; what it cannot do is feel a knob or read the
    cells off the screen.
 5. **One sample** (Samples page): pick a file. Every pad plays that file,
-   pitched by the piano map above. There is no slot, bank or mode knob — a
-   second file is not on the keybed until you pick it. On load, every knob
-   shows the value the sound is at (Volume 0.80, not 0).
+   pitched by the ladder above (pad 80 at its own speed). There is no slot,
+   bank or mode knob — a second file is not on the keybed until you pick it. On
+   load, every knob shows the value the sound is at (Volume 0.80, not 0).
 6. **FX route** (Setup page, `FX Route`): set a long delay
    (`delay_time` up, `delay_feedback` up), record a short loop in `pre`, then
    listen back with `delay_feedback` at zero — the delay's tail is *in* the
@@ -338,9 +343,9 @@ Then, with the chain loaded, open the module's editor and go to **Samples**:
 2. Jog through the list — the keybed follows the highlighted file (live
    preview), so you hear each one before you commit. Click to commit, back out
    to cancel.
-3. Play the pads. Every pad plays that one file, as a piano: white keys on
-   rows 1 and 3, black keys on rows 2 and 4. The C at the end of row 1 is the
-   sample at its own speed. There is no second sample on the keybed.
+3. Play the pads. Every pad plays that one file, as a keyboard: one semitone a
+   pad, pad 80 at its own speed, no two pads on the same note. There is no
+   second sample on the keybed.
 4. `STRT` / `END` trim that file and the pads draw its waveform.
 5. `CLR` returns the keybed to the shipped sample.
 6. Power-cycle and reload the Set: your assignment is still there, and every
@@ -400,11 +405,11 @@ and it will be silent rather than noisy, and `debug_view` will name it.
 | **No pages at all after a deploy** — one preset page reading "no presets" | the hierarchy JSON did not parse, and the host throws the whole document away rather than drawing half of it. `./hierarchy_probe ./dsp.so .` in the probe directory names the document and prints `VERDICT: FAIL`; a stray quote in one level's param list did exactly this |
 | Knobs work, keys silent | `key_probe` on the device — `1`s + `peak=0` is the streaming path |
 | Sound went away and never came back | ask for `debug_voice`: a voice with `p1` and `op1` is one whose open failed and stuck. Deleted/renamed sample files do this; P12/P13 in `VENDORED.md` are the fix |
-| Silent after playing the *top* of the keybed (or after sweeping `slot`/`bank`), fine again after a reload | a `_double` companion that is not there was opened as a 0-byte placeholder and streamed forever — P23 in `VENDORED.md`. Check `ls -la …/chompi/samples/ \| grep double` for a 0-byte file; the fixed reader ignores it and plays the base sample (rebuild/redeploy if you are on an older `.so`) |
+| Silent after playing the *top* of the keybed, fine again after a reload | a `_double` companion that is not there was opened as a 0-byte placeholder and streamed forever — P23 in `VENDORED.md`. Check `ls -la …/chompi/samples/ \| grep double` for a 0-byte file; the fixed reader ignores it and plays the base sample (rebuild/redeploy if you are on an older `.so`) |
 | One key is silent, its neighbours play | that slot's file is gone or unreadable — the assignment still points at it, so clear it (`CLR`) or reassign |
 | Only the first key or two make sound, the rest of the Samples page is silent | the device is still on the three bundled WAVs — `make deploy-full` (this is the classic one; step 0 has the whole story) |
-| In JAMMI, `slot`/`bank` seem to do nothing | they bind on the **next key press** by design (VENDORED P14/P17), and slot 15 is the RAM buffer, not a file — press a key after turning the knob, and check `debug_voice`'s summary line (`mode=… bank=… sel=…`) |
-| Switching JAMMI → CUBBI goes silent | CUBBI pads need their slot's file: with only the bundled samples the first two octaves play (pads 68–91); pads 92–99 are slot 3 and stay silent until the card set is there. `make deploy-full`, then check `debug_files` for `cubbi/0:110000000000001…` |
+| `voice_mode` / `bank` / `slot` seem to do nothing | they are pinned, not broken: the keybed plays one sample whatever they say (VENDORED P27), and an old Set that names them still restores |
+| A pad plays the same note as its neighbour, or the keybed goes wild on Move's octave buttons | the pitch is being taken from a pad's place in a table rather than from the note it sent (VENDORED P27) — `keybed_octave_probe` sweeps the surface at rest, +12 and −12 and names every pad that disagrees |
 | Everything works, output clips | `volume`/`gain`/`saturate`; CHOMPI's defaults are hot |
 | Browser opens, picking a file does nothing | the read-back key: `ssh ableton@move.local` then ask the plugin — `sample_file` must show the path, `sample_map` the assignment |
 | Assignment gone after a power cycle | `<module dir>/samples/samples.map` — check it exists and the module dir is writable |

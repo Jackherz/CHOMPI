@@ -1,15 +1,16 @@
 /* mode_bank_probe — voice_mode, bank and slot must not change the sample.
  *
- * One sample (jammi_a1) covers the whole piano. Writing cubbi, another bank
- * or another slot must leave pad 75 on that file. The other tones exist so a
- * switch would be audible as the wrong frequency.
+ * One sample (jammi_a1) covers the whole keybed. Writing cubbi, another bank
+ * or another slot must leave pad 80 — the sample's own speed — on that file.
+ * The other tones exist so a switch would be audible as the wrong frequency.
  *
  * It needs a sample directory whose files are labelled BY FREQUENCY, so the
  * spectrum says which file played:
  *
  *   cubbi_a1 440  cubbi_a2 480  cubbi_a3 520  cubbi_a4 560  cubbi_a5 600
  *   cubbi_b1 640  cubbi_b2 680
- *   jammi_a1 840  jammi_a2 880  jammi_a3 920  jammi_b1 1000
+ *   jammi_a1 261.63 (C4: the card's own tone)  jammi_a2 880  jammi_a3 920
+ *   jammi_b1 1000
  *
  * tools/make_probe_samples.py writes exactly that set. Every measurement is
  * then "which file is this", not "does it make a noise".
@@ -185,16 +186,18 @@ int main(int argc, char** argv)
     /* n.b. the engine runs at 44.1 kHz while these files are 48 kHz, so every
      * tone lands at 0.919x its nominal frequency (see sample_map_probe), and
      * JAMMI additionally transposes by the pad. */
-    /* PORT PATCH P22: one slot is one OCTAVE -- twelve pads -- and the pads are a
-     * chromatic ladder read left to right and bottom to top, so pad 68 is the
-     * slot the `slot` knob selects and pad 80 is the NEXT slot up. A pad's
-     * distance from its own octave's C is the pitch, hence the x1.4983 factors
-     * (a G, +7 semitones: pad 75 in the first octave, pad 87 in the second).
-     * The external-note presses this used to do (MIDI 48/50/52) are not the
-     * device's pads at all - they fall back to a chromatic reading, which is a
-     * different (and separately probed) path. */
-    /* One sample (jammi_a1, C4 261.63 Hz content → 240.4 through a 44.1 kHz
-     * engine reading a 48 kHz file). Pad 75 is 1.00x. Mode, bank and slot must
+    /* PORT PATCH P22: one slot is one OCTAVE -- twelve pads -- and the pads are
+     * a chromatic ladder read left to right and bottom to top (PORT PATCH P27),
+     * so pad 68 is the slot the `slot` knob selects and pad 80 is the NEXT slot
+     * up. A pad's distance from its own octave's C is the pitch, and the whole
+     * keybed reads from pad 80: -12 semitones at the bottom left, +19 at the
+     * top right, both exactly what the ladder says. The external-note presses
+     * this used to do (MIDI 48/50/52) are not the device's pads at all - they
+     * fall back to the same ladder, which is a different (and separately
+     * probed) path, so they are not pressed here.
+     *
+     * One sample (jammi_a1, C4 261.63 Hz content → 240.4 through a 44.1 kHz
+     * engine reading a 48 kHz file). Pad 80 is 1.00x. Mode, bank and slot must
      * not switch the file.
      *
      * This reference was 840 Hz because jammi_a1 used to be an 840 Hz tone.
@@ -206,16 +209,16 @@ int main(int argc, char** argv)
      * numbers, so it never was a playback fault. If the samples change again,
      * measure the file first and change the constant here. */
     const double one = 261.63 * 44100.0 / 48000.0;
-    printf("--- one sample on the piano; mode/bank/slot must not switch it ----\n");
-    press_note("pad 75, C at 1.00x (jammi_a1)", 75, one);
-    press_note("pad 68, that C an octave down", 68, one * 0.5);
-    press_note("pad 77, C# black key", 77, one * pow(2.0, -11.0 / 12.0));
+    printf("--- one sample on the keybed; mode/bank/slot must not switch it --\n");
+    press_note("pad 80, the sample at its own speed (jammi_a1)", 80, one);
+    press_note("pad 68, that speed halved", 68, one * 0.5);
+    press_note("pad 92, that speed doubled", 92, one * 2.0);
     set("voice_mode", "cubbi");
     set("bank", "1");
     set("slot", "5");
     settle_ms(800);
-    press_note("after cubbi / bank 1 / slot 5, still jammi_a1", 75, one);
-    press_note("and the black key is still that file", 77, one * pow(2.0, -11.0 / 12.0));
+    press_note("after cubbi / bank 1 / slot 5, still jammi_a1", 80, one);
+    press_note("and the octave above it is still that file", 92, one * 2.0);
     check("voice stays on the card sample, slot 1", strstr(dbg(), "ram0 slot1") != nullptr,
           dbg());
     printf("\n%s (%d failure%s in %d checks)\n", failures ? "VERDICT: FAIL" : "VERDICT: PASS",
