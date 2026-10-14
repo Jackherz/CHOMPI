@@ -285,12 +285,22 @@ In order, each step isolates one subsystem:
    up starts the loop later in the take, `End` down stops it earlier, and the
    pass gets shorter by exactly that much — half the take loops about twice as
    often, which is the whole feature in one listen. Both cells keep reading
-   back the number they were set to, `End` below `Strt` included; that crossed
-   pair is the span between the bounds played forwards for now — running it
-   backwards through the span is the next piece of this work, not a fault.
-   `tools/looper_probe` measures the pass in laps (whole 2, half 4) and checks
-   the window's edges offline; what it cannot do is feel a knob or read the
-   cells off the screen.
+   back the number they were set to, `End` below `Strt` included.
+   **The window's direction** (P28): take `End` on down *past* `Strt`. The
+   tape slows, stops and runs back — about a third of a second, through zero,
+   not a cut — and from then on the same stretch of the take plays backwards:
+   record a few distinct notes and you hear them in reverse order. Two things
+   to look at while it does: the `LOOPIT` cell still reads `1.0000` (the knob
+   you turned was `End`, not the pitch, and the module must not claim a reverse
+   you did not select), and the pass is the same length as it was forwards.
+   Then `End` back above `Strt`: it turns round again. `LOOPIT` below zero on
+   top of a crossed pair is forward again — two reversals — and *that* reverse
+   does show in the cell, because you set it. Cross the pair while the loop is
+   stopped, then play: it must run backwards from the first pass, no turnaround.
+   `tools/looper_probe` measures all of this offline (the pass in laps, whole 2
+   / half 4; the glide at 0.17 s and 0.57 s; the melody falling at −1.00; the
+   read-backs unmoved); what it cannot do is feel a knob or read the cells off
+   the screen.
 5. **One sample** (Samples page): pick a file. Every pad plays that file,
    pitched by the ladder above (pad 80 at its own speed). There is no slot,
    bank or mode knob — a second file is not on the keybed until you pick it. On

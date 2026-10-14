@@ -14,6 +14,13 @@
  * mailbox, so the probe plays a tone burst into it -- that is what the device
  * would receive, and it is what the looper records.
  *
+ * Since then the probe has grown with the Looper page: the dub gain's per-pass
+ * law, the record cell's live state, the playhead (looper_scrub), the window
+ * (Loop Start / Loop End, measured in laps) and the window's DIRECTION (End
+ * below Start runs the span backwards, through a 0.35 s glide, in a field of
+ * its own -- measured off a ramp, because a tone played backwards is the same
+ * tone), and the pitch and reverse read-backs.
+ *
  * Build (from schwung-chompi/):
  *   g++ -std=c++17 -O1 -D_Static_assert=static_assert \
  *       -I module/dsp/third_party/schwung -o /tmp/looper_probe \
@@ -47,6 +54,27 @@ static void check(const char* what, bool ok, const char* detail = "")
         fails++;
 }
 
+/* What the line input carries while a burst is on: the 440 Hz tone every
+ * section below records, or -- for the window's direction -- a MELODY: four
+ * notes a fifth-and-a-bit apart, 100 ms each, rising, over and over. A tone
+ * cannot tell a direction (played backwards it is the same tone), and a
+ * waveform's shape does not survive the engine's DC blockers the same way on
+ * every FX route; a rising arpeggio played backwards is a falling one, through
+ * any filter, which is also exactly what a reversed loop sounds like. */
+static bool g_melody = false;
+static const double kMelody[4] = {300.0, 400.0, 533.0, 711.0};
+static const double kNoteSeconds = 0.1;
+
+static double input_wave(double tt)
+{
+    if(g_melody)
+    {
+        const int note = (int)floor(tt / kNoteSeconds) % 4;
+        return 0.5 * sin(2.0 * M_PI * kMelody[note] * tt);
+    }
+    return 0.5 * sin(2.0 * M_PI * 440.0 * tt);
+}
+
 static void set(const char* k, const char* v)
 {
     api->set_param(inst, k, v);
@@ -76,7 +104,7 @@ static double render(double seconds, double in_from, double in_to, double from, 
         {
             const double tt = t + (double)i / MOVE_SAMPLE_RATE;
             const bool   on = (tt >= in_from && tt < in_to);
-            const double v  = on ? 0.5 * sin(2.0 * M_PI * 440.0 * tt) : 0.0;
+            const double v  = on ? input_wave(tt) : 0.0;
             const int16_t s = (int16_t)(v * 32000.0);
             in_lr[2 * i]     = s; /* left  */
             in_lr[2 * i + 1] = s; /* right */
@@ -262,6 +290,125 @@ static double tape_position()
     char buf[32];
     get("looper_position", buf, sizeof buf);
     return atof(buf);
+}
+
+/* The window's direction as the engine's glide has it: +1 forward, -1
+ * backwards, and the numbers between while the tape turns round. Its own
+ * field (PORT PATCH P28), which is what the direction section reads to see
+ * the glide -- the pitch and reverse cells must NOT move with it. */
+static double window_direction()
+{
+    char buf[32];
+    get("looper_window_dir", buf, sizeof buf);
+    return atof(buf);
+}
+
+/* Which way the head is going, from the head itself: `n` readings `dt` apart,
+ * and the mean sign of the change between them. +1 is every step forward, -1
+ * every step back; a wrap inside the run costs one step, so a tape running one
+ * way reads at least 0.75 in magnitude over eight. */
+static double head_motion(int n, double dt)
+{
+    int    up = 0, down = 0;
+    double p = tape_position();
+    for(int k = 0; k < n; k++)
+    {
+        render(dt, -1, -1, 0, 0);
+        const double q = tape_position();
+        if(q > p)
+            up++;
+        else if(q < p)
+            down++;
+        p = q;
+    }
+    return (up + down) ? (double)(up - down) / (double)(up + down) : 0.0;
+}
+
+/* Which way the AUDIO is going: the melody's own direction. The output is
+ * read in 50 ms chunks, each chunk is named for the loudest of the four notes
+ * (Goertzel at the four frequencies), and every change of note between one
+ * chunk and the next is a step up or a step down the arpeggio. Forward the
+ * take steps up, up, up and jumps back to the bottom; backwards it steps down,
+ * down, down and jumps to the top. The jumps (and whatever the loop's own seam
+ * does) are not adjacent notes and are left out, so a tape running one way
+ * reads close to +1 and the other close to -1. */
+static double melody_direction(double seconds)
+{
+    const int chunk  = (int)(MOVE_SAMPLE_RATE * 0.05);
+    static double x[4096];
+    const int blocks = (int)(seconds * MOVE_SAMPLE_RATE / MOVE_FRAMES_PER_BLOCK);
+    int16_t   out[256];
+    int       n = 0, prev = -1;
+    long      up = 0, down = 0;
+    for(int b = 0; b < blocks; b++)
+    {
+        for(int i = 0; i < MOVE_FRAMES_PER_BLOCK; i++)
+            in_lr[2 * i] = in_lr[2 * i + 1] = 0;
+        api->render_block(inst, out, MOVE_FRAMES_PER_BLOCK);
+        for(int i = 0; i < MOVE_FRAMES_PER_BLOCK; i++)
+        {
+            x[n++] = out[2 * i] / 32768.0;
+            if(n < chunk)
+                continue;
+            int    best = -1;
+            double best_e = 0.0, total = 0.0;
+            for(int k = 0; k < 4; k++)
+            {
+                const double e = goertzel(x, n, kMelody[k]);
+                total += e;
+                if(e > best_e)
+                {
+                    best_e = e;
+                    best   = k;
+                }
+            }
+            n = 0;
+            /* A chunk with no clear note (the seam's fade, silence) names
+             * nothing and breaks the chain, so the next clear note is not
+             * compared against something half a window away. */
+            if(best < 0 || best_e < 0.6 * total)
+            {
+                prev = -1;
+                continue;
+            }
+            if(prev >= 0 && best != prev)
+            {
+                if(best == prev + 1)
+                    up++;
+                else if(best == prev - 1)
+                    down++;
+            }
+            prev = best;
+        }
+        usleep(2900);
+    }
+    return (up + down) ? (double)(up - down) / (double)(up + down) : 0.0;
+}
+
+/* The window the head actually travels, from the head: its lowest and highest
+ * readings over `seconds`, and how many times it wrapped (a jump of more than
+ * 0.3 of the take between two readings 50 ms apart). This is the span and the
+ * lap count in one pass, either direction, for a take with no quiet part to
+ * count onsets in. */
+static void head_travel(double seconds, double* lo, double* hi, int* laps)
+{
+    *lo   = 2.0;
+    *hi   = -1.0;
+    *laps = 0;
+    double p = tape_position();
+    const int steps = (int)(seconds / 0.05);
+    for(int k = 0; k < steps; k++)
+    {
+        render(0.05, -1, -1, 0, 0);
+        const double q = tape_position();
+        if(q < *lo)
+            *lo = q;
+        if(q > *hi)
+            *hi = q;
+        if(fabs(q - p) > 0.3)
+            (*laps)++;
+        p = q;
+    }
 }
 
 int main(int argc, char** argv)
@@ -655,6 +802,134 @@ int main(int argc, char** argv)
 
     set("looper_start", "0.0");
     set("looper_end", "1.0");
+
+    printf("\n--- The window's direction: End below Start runs it backwards ----\n");
+    /* PORT PATCH P28. The order of the pair is its direction: End below Start
+     * is the same span of tape run BACKWARDS, with a 0.35 s glide through zero
+     * on the way (the reference module's WINDOW_FLIP_SECONDS), kept in a field
+     * of its own so the pitch and reverse cells go on reading what the user
+     * set. Four things are measured, and they are four different failures:
+     * the head's direction (the engine's word), the audio's direction (the
+     * tape's -- a rising melody played backwards falls), the glide (not a
+     * flip), and the read-backs (not a reverse nobody selected). The take is
+     * the arpeggio input_wave() describes, end to end. */
+    set("loop_clear", "Clear");
+    render(1.6, -1, -1, 0, 0); /* the clear winds down */
+    g_melody = true;
+    record_loop(1.6, 0.0, 1.6);
+    g_melody = false;
+    /* Ending the first take rolls it into a DUB pass (LooperEngine::
+     * ToggleRecord keeps `record` up: the hardware's first-record-then-
+     * overdub). End that too, or every measurement below is of a take being
+     * rewritten under it -- and a dub into a window is its own story, not
+     * this one. */
+    render(0.15, -1, -1, 0, 0);
+    set("looper_record", "lorec");
+    render(0.3, -1, -1, 0, 0);
+    get("looper_recording", buf, sizeof buf);
+    check("the melody take plays without a dub pass running", buf[0] == '0', buf);
+
+    /* Forward first: Start below End, the way the knobs come up. */
+    set("looper_start", "0.2");
+    set("looper_end", "0.8");
+    render(1.0, -1, -1, 0, 0);
+    const double dir_fwd    = window_direction();
+    const double motion_fwd = head_motion(8, 0.05);
+    const double melody_fwd = melody_direction(2.0);
+    snprintf(buf, sizeof buf, "dir %.4f, head %+.2f, melody %+.2f", dir_fwd, motion_fwd, melody_fwd);
+    check("Start below End: the head runs forward, the melody rises",
+          fabs(dir_fwd - 1.0) < 0.001 && motion_fwd >= 0.5 && melody_fwd >= 0.6, buf);
+
+    /* Cross them while the tape rolls. The write re-aims the glide and does
+     * not flip the tape: the reading is still +1 the moment after. */
+    set("looper_start", "0.8");
+    set("looper_end", "0.2");
+    const double dir_at_write = window_direction();
+    render(0.175, -1, -1, 0, 0); /* half the glide: the zero crossing */
+    const double dir_mid = window_direction();
+    render(0.4, -1, -1, 0, 0);   /* past 0.35 s: the glide has landed */
+    const double dir_done = window_direction();
+    snprintf(buf, sizeof buf, "at the write %.4f, 0.17 s in %.4f, 0.57 s in %.4f",
+             dir_at_write, dir_mid, dir_done);
+    check("crossing the pair glides through zero over 0.35 s, not a flip",
+          dir_at_write > 0.99 && fabs(dir_mid) < 0.3 && fabs(dir_done + 1.0) < 0.001, buf);
+
+    /* The tape itself follows its own slew behind the ramp: give it the rest
+     * of a second, then ask the head and the audio which way they are going. */
+    render(0.5, -1, -1, 0, 0);
+    const double motion_rev = head_motion(8, 0.05);
+    const double melody_rev = melody_direction(2.0);
+    snprintf(buf, sizeof buf, "head %+.2f (forward was %+.2f), melody %+.2f (forward was %+.2f)",
+             motion_rev, motion_fwd, melody_rev, melody_fwd);
+    check("End below Start: the head runs backwards, the melody falls",
+          motion_rev <= -0.5 && melody_rev <= -0.6, buf);
+
+    /* Its own field: the cells that name the pitch's direction have not
+     * moved, and the pair reads back as written. */
+    char rb_a_dir[32], rb_b_dir[32], rb_s[16], rb_e[16];
+    get("looper_reverse", rb_a_dir, sizeof rb_a_dir);
+    get("looper_pitch", rb_b_dir, sizeof rb_b_dir);
+    get("looper_start", rb_s, sizeof rb_s);
+    get("looper_end", rb_e, sizeof rb_e);
+    snprintf(buf, sizeof buf, "reverse %s, pitch %s, start %s, end %s", rb_a_dir, rb_b_dir, rb_s, rb_e);
+    check("the reversed window reports no direction nobody selected",
+          strcmp(rb_a_dir, "Off") == 0 && fabs(atof(rb_b_dir) - 1.0) < 0.001
+          && fabs(atof(rb_s) - 0.8) < 0.001 && fabs(atof(rb_e) - 0.2) < 0.001, buf);
+
+    /* The same length of tape either way: the head stays inside 0.2..0.8 and
+     * comes round about as often as the forward window does. */
+    double lo_rev, hi_rev, lo_fwd, hi_fwd;
+    int    laps_rev, laps_fwd;
+    head_travel(3.0, &lo_rev, &hi_rev, &laps_rev);
+    snprintf(buf, sizeof buf, "head %.3f..%.3f, %d laps in 3 s", lo_rev, hi_rev, laps_rev);
+    check("the reversed window is the same span, not a collapse",
+          lo_rev >= 0.17 && hi_rev <= 0.83 && laps_rev >= 2, buf);
+
+    /* Two reversals are forward: a negative Loop Pitch on top of the crossed
+     * pair runs the tape forward again, and THAT reverse is the one the
+     * user selected, so its cell says so. */
+    set("looper_pitch", "-1");
+    render(1.5, -1, -1, 0, 0); /* through zero again, on the tape's own slew */
+    const double motion_both = head_motion(8, 0.05);
+    const double melody_both = melody_direction(2.0);
+    get("looper_reverse", rb_a_dir, sizeof rb_a_dir);
+    snprintf(buf, sizeof buf, "head %+.2f, melody %+.2f, reverse %s, dir %.4f", motion_both,
+             melody_both, rb_a_dir, window_direction());
+    check("a negative pitch on a reversed window is forward again",
+          motion_both >= 0.5 && melody_both >= 0.6 && strcmp(rb_a_dir, "On") == 0, buf);
+    set("looper_pitch", "1");
+    render(1.5, -1, -1, 0, 0);
+
+    /* Uncrossing glides back, and the forward window's travel matches. */
+    set("looper_start", "0.2");
+    set("looper_end", "0.8");
+    render(0.6, -1, -1, 0, 0);
+    const double dir_back = window_direction();
+    render(0.5, -1, -1, 0, 0);
+    const double motion_back = head_motion(8, 0.05);
+    head_travel(3.0, &lo_fwd, &hi_fwd, &laps_fwd);
+    snprintf(buf, sizeof buf, "dir %.4f, head %+.2f, %.3f..%.3f, %d laps (reversed %d)",
+             dir_back, motion_back, lo_fwd, hi_fwd, laps_fwd, laps_rev);
+    check("putting the pair back in order runs it forward again, same span",
+          fabs(dir_back - 1.0) < 0.001 && motion_back >= 0.5
+          && abs(laps_fwd - laps_rev) <= 1, buf);
+
+    /* Crossed while PARKED: the glide runs from the knob, not from the next
+     * play, so the tape is already turned round when it rolls. */
+    stop_tape();
+    set("looper_start", "0.8");
+    set("looper_end", "0.2");
+    render(0.6, -1, -1, 0, 0);
+    const double dir_parked = window_direction();
+    start_tape_now();
+    const double motion_parked = head_motion(8, 0.05);
+    snprintf(buf, sizeof buf, "dir while parked %.4f, head on play %+.2f", dir_parked, motion_parked);
+    check("a pair crossed while parked plays backwards from the first pass",
+          fabs(dir_parked + 1.0) < 0.001 && motion_parked <= -0.5, buf);
+
+    set("looper_start", "0.0");
+    set("looper_end", "1.0");
+    render(0.6, -1, -1, 0, 0); /* the glide back to forward, before the next section */
 
     printf("\n--- Loop Pitch and Loop Rev: the knob and the tape --------------\n");
     /* Two things are being checked at once, and they are different failures:

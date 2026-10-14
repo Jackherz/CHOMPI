@@ -48,8 +48,11 @@ namespace daisy
             /* PORT PATCH P26: derive the tape's window from its two fractions
              * once a block -- cheap, and it means a take being recorded or a
              * turned knob is picked up without every sample doing the
-             * arithmetic. */
-            looper.PerBlock();
+             * arithmetic. P28: the block length is what the window's direction
+             * glide advances by, and it runs BEFORE the early return below so
+             * a window crossed over an empty or parked tape has turned round
+             * by the time the tape rolls. */
+            looper.PerBlock(size);
 
             if(IsFirstRecording() && !IsRecording() && !looper.IsResetting())
                 return;
@@ -158,6 +161,10 @@ namespace daisy
         inline void SetWindowEnd(float val) { looper.SetWindowEnd(val); }
         inline float GetWindowStart() { return looper.GetWindowStart(); }
         inline float GetWindowEnd() { return looper.GetWindowEnd(); }
+        /* PORT PATCH P28: the window's direction as the glide has it, +1
+         * forward to -1 backwards, passing through zero on the way. Its own
+         * reading, apart from the pitch's sign (see FileSampler). */
+        inline float GetWindowDirection() { return looper.GetWindowDirection(); }
         inline bool GetReverse() { return looper.GetReverse(); }
 
         void RecordButton(bool rising)

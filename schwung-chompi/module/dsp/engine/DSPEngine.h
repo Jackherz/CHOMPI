@@ -1301,6 +1301,8 @@ namespace daisy
         inline void SetLooperWindowEnd(float f) { looper.SetWindowEnd(f); }
         inline float GetLooperWindowStart() { return looper.GetWindowStart(); }
         inline float GetLooperWindowEnd() { return looper.GetWindowEnd(); }
+        /* PORT PATCH P28: the window's direction glide, +1 .. -1. */
+        inline float GetLooperWindowDirection() { return looper.GetWindowDirection(); }
 
         /* PORT PATCH P25: the port's Scrub is a TAPE PLAYHEAD -- it moves the
          * head to another part of the loop (and its knob reads back where the
